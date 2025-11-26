@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "pickem_secret_key")  # fallback for local
 
+# Shared CSV directory for Render
+CSV_DIR = "/opt/render/project/src/data"
 
 # ---------- HELPER FUNCTIONS ---------- #
 
@@ -28,11 +30,11 @@ def check_key():
 
 def load_games():
     """Load all test games from CSV."""
-    return pd.read_csv('data/test_games.csv')
+    return pd.read_csv(f"{CSV_DIR}/test_games.csv")
 
 
 def load_team_records():
-    df = pd.read_csv("data/team_records.csv")
+    df = pd.read_csv(f"{CSV_DIR}/team_records.csv")
     records = dict(zip(df["team"], df["record"]))
 
     aliases = {
@@ -52,7 +54,7 @@ def load_team_records():
 
 
 def load_spreads():
-    df = pd.read_csv("data/spreads.csv")
+    df = pd.read_csv(f"{CSV_DIR}/spreads.csv")
     return dict(zip(df["game_id"], df["spread"]))
 
 
@@ -61,7 +63,7 @@ def user_has_submitted(username: str) -> bool:
     Return True if this username has a full set of picks in picks.csv
     (point values 1 through 5 present).
     """
-    picks_path = "data/picks.csv"
+    picks_path = f"{CSV_DIR}/picks.csv"
     if not os.path.exists(picks_path) or not username:
         return False
 
@@ -100,7 +102,7 @@ def write_final_picks_to_csv(username: str, picks_by_page: dict):
     if not rows:
         return
 
-    picks_path = "data/picks.csv"
+    picks_path = f"{CSV_DIR}/picks.csv"
     new_df = pd.DataFrame(rows)
 
     if not os.path.exists(picks_path):
@@ -266,7 +268,7 @@ def review_picks():
     picks_df = pd.DataFrame(rows)
 
     # Load game metadata for matchup display
-    games_df = pd.read_csv('data/test_games.csv')
+    games_df = pd.read_csv(f'{CSV_DIR}/test_games.csv')
 
     # Make sure game_id types match
     games_df['game_id'] = games_df['game_id'].astype(str)
@@ -325,8 +327,8 @@ def confirm_picks():
 
 @app.route('/leaderboard')
 def leaderboard():
-    games = pd.read_csv('data/test_games.csv')
-    picks = pd.read_csv('data/picks.csv')
+    games = pd.read_csv(f'{CSV_DIR}/test_games.csv')
+    picks = pd.read_csv(f'{CSV_DIR}/picks.csv')
 
     # Ensure matching merge keys
     games['game_id'] = games['game_id'].astype(str)
@@ -378,8 +380,8 @@ def leaderboard():
 @app.route('/user/<username>')
 def user_picks(username):
     # Load data
-    games = pd.read_csv('data/test_games.csv')
-    picks = pd.read_csv('data/picks.csv')
+    games = pd.read_csv(f'{CSV_DIR}/test_games.csv')
+    picks = pd.read_csv(f'{CSV_DIR}/picks.csv')
 
     # Ensure consistent types
     games['game_id'] = games['game_id'].astype(str)
@@ -428,8 +430,8 @@ def picks_board():
     if not username:
         return redirect('/')
 
-    picks_df = pd.read_csv('data/picks.csv')
-    games_df = pd.read_csv('data/test_games.csv')
+    picks_df = pd.read_csv(f'{CSV_DIR}/picks.csv')
+    games_df = pd.read_csv(f'{CSV_DIR}/test_games.csv')
 
     # If user hasn't submitted picks, redirect back to home
     if username not in picks_df['username'].unique():
