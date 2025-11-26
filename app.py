@@ -2,6 +2,8 @@ from flask import Flask, render_template, request, redirect, session, url_for
 import pandas as pd
 import os
 from dotenv import load_dotenv
+from datetime import datetime
+import pytz
 
 # ---------- ENV & APP SETUP ---------- #
 
@@ -11,6 +13,13 @@ app.secret_key = os.getenv("FLASK_SECRET_KEY", "pickem_secret_key")  # fallback 
 # Shared directories for Render
 CSV_DIR = "/opt/render/project/src/data"
 DISK_DIR = "/opt/render/project/src/storage"
+
+# Global pick deadline
+PICK_DEADLINE_PST = datetime(2025, 11, 28, 9, 0, 0, tzinfo=pytz.timezone("US/Pacific"))
+
+def picks_locked():
+    now_pst = datetime.now(pytz.timezone("US/Pacific"))
+    return now_pst >= PICK_DEADLINE_PST
 
 # ---------- HELPER FUNCTIONS ---------- #
 
@@ -132,6 +141,9 @@ def set_name():
 
 @app.route('/picks/<int:points>', methods=['GET'])
 def picks_page(points):
+    if picks_locked():
+        return render_template("locked.html")
+
     if 'username' not in session:
         return redirect('/enter_name')
 
@@ -182,6 +194,9 @@ def picks_page(points):
 
 @app.route('/submit_picks/<int:points>', methods=['POST'])
 def submit_picks(points):
+    if picks_locked():
+        return render_template("locked.html")
+
     if 'username' not in session:
         return redirect('/enter_name')
 
