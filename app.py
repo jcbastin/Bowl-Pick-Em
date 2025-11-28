@@ -92,8 +92,7 @@ def write_final_picks_to_csv(username: str, picks_by_page: dict):
             rows.append({
                 "username": username,
                 "game_id": str(game_id),
-                "selected_team": selected_team,
-                "point_value": int(point_value),
+                "selected_team": selected_team
             })
 
     if not rows:
@@ -330,7 +329,6 @@ def confirm_picks():
 
 @app.route('/leaderboard')
 def leaderboard():
-    # Load data
     games_df = pd.read_csv(f'{DISK_DIR}/test_games.csv')
     picks_df = pd.read_csv(f'{DISK_DIR}/picks.csv')
 
@@ -338,118 +336,68 @@ def leaderboard():
     games_df['game_id'] = games_df['game_id'].astype(str)
     picks_df['game_id'] = picks_df['game_id'].astype(str)
 
-    # Clean booleans & missing winners
-    games_df['winner'] = games_df['winner'].replace({None: "", "nan": "", "": ""})
-    games_df['completed'] = games_df['completed'].replace({"True": True, "False": False}).astype(bool)
-
-    # Merge picks with games
+    # Merge picks with game metadata
     merged = picks_df.merge(
         games_df[['game_id', 'winner', 'completed', 'point_value']],
         on='game_id',
-        how='left'
+        how='left',
+        validate='many_to-one'
     )
 
-    # ---------------------------
-    # FIX POINT VALUE COLUMN
-    # ---------------------------
-    # Handle possible duplicate columns from merge
-    if 'point_value_x' in merged.columns:
-        merged.rename(columns={'point_value_x': 'point_value'}, inplace=True)
+    # Defensive cleanup for point_value
+    if 'point_value_x' in merged.columns or 'point_value_y' in merged.columns:
+        merged['point_value'] = merged['point_value_y'].fillna(0).astype(int)
+        merged.drop(columns=['point_value_x', 'point_value_y'], inplace=True, errors='ignore')
+    else:
+        merged['point_value'] = merged['point_value'].fillna(0).astype(int)
 
-    if 'point_value_y' in merged.columns:
-        merged.rename(columns={'point_value_y': 'point_value'}, inplace=True)
-
-    # If still missing, set safe default
-    if 'point_value' not in merged.columns:
-        merged['point_value'] = 0
-
-    # Ensure integer
-    merged['point_value'] = merged['point_value'].fillna(0).astype(int)
-
-    # ---------------------------
-    # SCORING LOGIC
-    # ---------------------------
-    merged['correct'] = (
-        (merged['completed'] == True) &
-        (merged['selected_team'] == merged['winner'])
-    )
-
+    # Scoring logic
+    merged['correct'] = (merged['completed'] == True) & (merged['selected_team'] == merged['winner'])
     merged['score'] = merged['correct'].astype(int) * merged['point_value']
 
-    # Aggregate by user
+    # Aggregate totals
     totals = (
-        merged.groupby('username', as_index=False)
-        .agg({'score': 'sum'})
-        .rename(columns={'score': 'total_points'})
+        merged.groupby('username', as_index=False)['score']
+              .sum()
+              .rename(columns={'score': 'total_points'})
     )
 
-    # Rank users
     totals['rank'] = totals['total_points'].rank(method='min', ascending=False).astype(int)
     totals = totals.sort_values(['rank', 'username'])
 
-    return render_template(
-        'leaderboard.html',
-        leaderboard=totals.to_dict(orient='records')
-    )
+    return render_template('leaderboard.html', leaderboard=totals.to_dict(orient='records'))
+
 
 
 @app.route('/user/<username>')
 def user_picks(username):
-    # Load data
+
     games_df = pd.read_csv(f'{DISK_DIR}/test_games.csv')
     picks_df = pd.read_csv(f'{DISK_DIR}/picks.csv')
 
-    # Ensure consistent types
     games_df['game_id'] = games_df['game_id'].astype(str)
     picks_df['game_id'] = picks_df['game_id'].astype(str)
 
-    # Filter to ONLY this user's picks
-    user_picks = picks_df[picks_df['username'] == username].copy()
-
-    # If user has no picks, redirect home
-    if user_picks.empty:
+    user_df = picks_df[picks_df['username'] == username].copy()
+    if user_df.empty:
         return redirect('/')
 
-    # Merge user picks with full game info
-    merged = user_picks.merge(
+    merged = user_df.merge(
         games_df[['game_id', 'home_team', 'away_team', 'winner', 'completed', 'point_value']],
         on='game_id',
-        how='left'
+        how='left',
+        validate='one_to-one'
     )
 
-    # Ensure required columns exist
-    if 'completed' not in merged.columns:
-        merged['completed'] = False
-    if 'winner' not in merged.columns:
-        merged['winner'] = None
-    if 'point_value' not in merged.columns:
-        merged['point_value'] = 0
+    merged['point_value'] = merged['point_value'].fillna(0).astype(int)
+    merged['completed'] = merged['completed'].fillna(False).astype(bool)
 
-    # Compute correctness
-    merged['correct'] = (merged['completed'] == True) & \
-                        (merged['selected_team'] == merged['winner'])
-
-    # Ensure point_value is an integer
-    merged['point_value'] = merged['point_value'].astype(int)
-
-    # Compute score using integer point_value
+    merged['correct'] = (merged['completed'] == True) & (merged['selected_team'] == merged['winner'])
     merged['score'] = merged['correct'].astype(int) * merged['point_value']
 
-    # CSS class for green/red
-    def compute_class(row):
-        if not row['completed'] or pd.isna(row['winner']):
-            return ""
-        return "correct" if row['correct'] else "incorrect"
-
-    merged['result_class'] = merged.apply(compute_class, axis=1)
-
-    # Build matchup labels
     merged['matchup'] = merged['away_team'] + " at " + merged['home_team']
 
-    # Sort by kickoff time using games_df order
     merged = merged.sort_values('game_id')
-
-    # Calculate total score
     total_score = int(merged['score'].sum())
 
     return render_template(
@@ -458,6 +406,7 @@ def user_picks(username):
         picks=merged.to_dict(orient='records'),
         total_score=total_score
     )
+
 
 
 
@@ -475,11 +424,15 @@ def picks_board():
     if username not in picks_df['username'].unique():
         return redirect('/')
 
-    # Ensure correct datatypes
+    # Ensure correct types
     games_df['game_id'] = games_df['game_id'].astype(str)
     picks_df['game_id'] = picks_df['game_id'].astype(str)
 
-    # Build metadata for display in table header
+    # Clean games data
+    games_df['winner'] = games_df['winner'].replace({None: "", "nan": "", "": ""})
+    games_df['completed'] = games_df['completed'].replace({"True": True, "False": False}).astype(bool)
+
+    # Metadata for table header
     games_meta = []
     for _, row in games_df.sort_values('game_id').iterrows():
         games_meta.append({
@@ -488,83 +441,61 @@ def picks_board():
             "completed": row['completed'],
             "winner": row['winner']
         })
-    # Compute per-user total points and competition-style rank (1,1,3,4)
-    # We reuse the scoring logic from /leaderboard and /user/<username>
-    import numpy as np
 
-    # Clean winner + completed fields
-    games_df['winner'] = games_df['winner'].replace({np.nan: None, "nan": None, "": None})
-    games_df['completed'] = games_df['completed'].replace({"True": True, "False": False})
-    games_df['completed'] = games_df['completed'].astype(bool)
-
-    # Ensure consistent types
-    games_df['game_id'] = games_df['game_id'].astype(str)
-    picks_df['game_id'] = picks_df['game_id'].astype(str)
-
-    # Merge picks with necessary game info to compute scores
+    # ============================
+    # SCORE MERGE (FIXED VERSION)
+    # ============================
     score_merged = picks_df.merge(
         games_df[['game_id', 'winner', 'completed', 'point_value']],
         on='game_id',
-        how='left'
+        how='left',
+        validate='many_to-one'       # ensures correct joining
     )
 
-    # Fix point_value column just in case
-    if 'point_value' not in score_merged.columns:
-        if 'point_value_x' in score_merged.columns:
-            score_merged.rename(columns={'point_value_x': 'point_value'}, inplace=True)
-        elif 'point_value_y' in score_merged.columns:
-            score_merged.rename(columns={'point_value_y': 'point_value'}, inplace=True)
-        else:
-            score_merged['point_value'] = 0
+    score_merged['point_value'] = score_merged['point_value'].fillna(0).astype(int)
+    score_merged['completed'] = score_merged['completed'].fillna(False).astype(bool)
 
-    # Correctness should only count when game is completed
-    score_merged['correct'] = (score_merged['completed'] == True) & (score_merged['selected_team'] == score_merged['winner'])
+    score_merged['correct'] = (
+        (score_merged['completed'] == True) &
+        (score_merged['selected_team'] == score_merged['winner'])
+    )
 
-    # Score is point_value only when correct
-    score_merged['score'] = score_merged['correct'] * score_merged['point_value']
+    score_merged['score'] = score_merged['correct'].astype(int) * score_merged['point_value']
 
     # Aggregate total per user
     totals = (
-        score_merged.groupby('username', as_index=False)
-        .agg({'score': 'sum'})
+        score_merged.groupby('username', as_index=False)['score']
+        .sum()
         .rename(columns={'score': 'total_points'})
     )
 
-    # If a user somehow has no rows (shouldn't happen), ensure they are present via picks_df
-    # Compute competition-style ranks ('min' => 1,1,3,4)
-    if not totals.empty:
-        totals['rank'] = totals['total_points'].rank(method='min', ascending=False).astype(int)
-    else:
-        totals['rank'] = []
-
-    # Order users by rank then username
+    totals['rank'] = totals['total_points'].rank(method='min', ascending=False).astype(int)
     totals = totals.sort_values(['rank', 'username'])
 
-    # Build a structure: list of rows each with username, rank, total_points, and their picks mapping
+    # Build a list of user rows with picks + classes
     picks_rows = []
+
     for _, urow in totals.iterrows():
         user = urow['username']
         user_picks = picks_df[picks_df['username'] == user]
+
         user_row = {}
 
         for _, up in user_picks.iterrows():
             gid = up['game_id']
             pick = up['selected_team']
 
-            # Default no color
+            # Default styling
             cell_class = ""
 
-            # Find game info
+            # Game info
             game_row = games_df[games_df['game_id'] == gid].iloc[0]
             completed = bool(game_row['completed'])
             winner = game_row['winner']
 
-            # Only color if completed = True AND winner is not missing
+            # Only color if game completed & has winner
             if completed and isinstance(winner, str) and winner.strip() != "":
-                if pick == winner:
-                    cell_class = "correct"
-                else:
-                    cell_class = "incorrect"
+                cell_class = "correct" if pick == winner else "incorrect"
 
             user_row[gid] = {
                 "pick": pick,
@@ -583,6 +514,7 @@ def picks_board():
         games=games_meta,
         picks=picks_rows
     )
+
 
 
 # ---------- MAIN ---------- #
