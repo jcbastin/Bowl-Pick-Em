@@ -409,10 +409,8 @@ def user_picks(username):
     # Filter to this user's picks
     user_df = merged[merged['username'] == username].copy()
 
-    # Correctness should only count when game is completed
-    user_df['correct'] = user_df['selected_team'] == user_df['winner']
-
-    # Score is point_value only when correct
+    # Update correctness to check both completion and matching winner
+    user_df['correct'] = (user_df['completed'] == True) & (user_df['selected_team'] == user_df['winner'])
     user_df['score'] = user_df['correct'] * user_df['point_value']
 
     # Total score
