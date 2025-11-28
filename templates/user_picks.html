@@ -37,7 +37,6 @@
 <h1>{{ username }}'s Picks 🏈</h1>
 <h3>Total Score: {{ total_score }} points</h3>
 
-<!-- NAVIGATION -->
 <p>
     <a href="/">🏠 Home</a> |
     <a href="/leaderboard">🏆 Leaderboard</a> |
@@ -64,28 +63,20 @@
             <img src="{{ url_for('static', filename='logos/' + p['selected_team'].replace(' ', '_') + '.png') }}">
         </td>
 
-        <!-- RESULT COLUMN -->
-{% if not p['completed'] %}
-    <!-- GAME NOT FINISHED -->
-    <td>—</td>
-
-{% else %}
-    <!-- GAME COMPLETED -->
-    {% if not p['winner'] %}
-        <!-- Winner missing (manual override or API bug) -->
-        <td>—</td>
-    {% else %}
-        {% if p['correct'] %}
-            <td class="correct">✔ {{ p['winner'] }} won</td>
+        <!-- RESULT -->
+        {% if not p['completed'] %}
+            <td>—</td>
         {% else %}
-            <td class="wrong">✘ {{ p['winner'] }} won</td>
+            {% if p['correct'] %}
+                <td class="correct">✔ {{ p['winner'] }} won</td>
+            {% else %}
+                <td class="wrong">✘ {{ p['winner'] }} won</td>
+            {% endif %}
         {% endif %}
-    {% endif %}
-{% endif %}
 
-        <!-- POINTS COLUMN -->
+        <!-- POINTS (use p['score'], not p['point_value']) -->
         {% if p['completed'] %}
-            <td>{{ p['point_value'] }}</td>
+            <td>{{ p['score'] }}</td>
         {% else %}
             <td>—</td>
         {% endif %}
