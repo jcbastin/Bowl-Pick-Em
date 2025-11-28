@@ -392,35 +392,31 @@ def user_picks(username):
 
     # Merge picks with game info
     merged = picks.merge(
-        games[['game_id', 'home_team', 'away_team', 'winner', 'point_value']],
+        games[['game_id', 'home_team', 'away_team', 'winner', 'point_value', 'completed']],
         on='game_id',
         how='left'
     )
 
-    # Fix point_value column just in case
-    if 'point_value' not in merged.columns:
-        if 'point_value_x' in merged.columns:
-            merged.rename(columns={'point_value_x': 'point_value'}, inplace=True)
-        elif 'point_value_y' in merged.columns:
-            merged.rename(columns={'point_value_y': 'point_value'}, inplace=True)
-        else:
-            merged['point_value'] = 0
+    # Ensure 'completed' column exists and is boolean
+    merged['completed'] = merged['completed'].fillna(False).astype(bool)
 
-    # Filter to this user's picks
-    user_df = merged[merged['username'] == username].copy()
+    # Update correctness and scoring logic
+    merged['correct'] = (merged['completed'] == True) & (merged['selected_team'] == merged['winner'])
+    merged['score'] = merged['correct'] * merged['point_value']
 
-    # Update correctness to check both completion and matching winner
-    user_df['correct'] = (user_df['completed'] == True) & (user_df['selected_team'] == user_df['winner'])
-    user_df['score'] = user_df['correct'] * user_df['point_value']
+    # Add result_class for styling
+    def determine_result_class(row):
+        if row['completed'] and isinstance(row['winner'], str) and row['winner'].strip():
+            return "correct" if row['selected_team'] == row['winner'] else "incorrect"
+        return ""
 
-    # Total score
-    total_score = int(user_df['score'].sum())
+    merged['result_class'] = merged.apply(determine_result_class, axis=1)
 
     return render_template(
         'user_picks.html',
         username=username,
-        picks=user_df.to_dict(orient='records'),
-        total_score=total_score
+        picks=merged.to_dict(orient='records'),
+        total_score=int(merged['score'].sum())
     )
 
 
