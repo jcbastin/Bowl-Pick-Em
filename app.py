@@ -330,57 +330,50 @@ def confirm_picks():
 
 @app.route('/leaderboard')
 def leaderboard():
-    games = pd.read_csv(f'{DISK_DIR}/test_games.csv')
-    picks = pd.read_csv(f'{DISK_DIR}/picks.csv')
+    # Load data
+    games_df = pd.read_csv(f'{DISK_DIR}/test_games.csv')
+    picks_df = pd.read_csv(f'{DISK_DIR}/picks.csv')
 
-    # Ensure matching merge keys
-    games['game_id'] = games['game_id'].astype(str)
-    picks['game_id'] = picks['game_id'].astype(str)
+    # Ensure consistent types
+    games_df['game_id'] = games_df['game_id'].astype(str)
+    picks_df['game_id'] = picks_df['game_id'].astype(str)
 
-    # Merge picks with game results
-    merged = picks.merge(
-        games[['game_id', 'winner', 'completed', 'point_value']],
+    # Clean boolean/string issues
+    games_df['winner'] = games_df['winner'].replace({None: "", "nan": "", "": ""})
+    games_df['completed'] = games_df['completed'].replace({"True": True, "False": False}).astype(bool)
+
+    # Merge picks with game info
+    merged = picks_df.merge(
+        games_df[['game_id', 'winner', 'completed', 'point_value']],
         on='game_id',
         how='left'
     )
 
-    # If point_value came in as point_value_y or point_value_x, fix it
-    if 'point_value' not in merged.columns:
-        if 'point_value_x' in merged.columns:
-            merged.rename(columns={'point_value_x': 'point_value'}, inplace=True)
-        elif 'point_value_y' in merged.columns:
-            merged.rename(columns={'point_value_y': 'point_value'}, inplace=True)
-        else:
-            merged['point_value'] = 0
+    # Force point_value into proper int
+    merged['point_value'] = merged['point_value'].astype(int)
 
-    # Normalize boolean and winner fields in games_df
-    games_df['completed'] = games_df['completed'].replace({"True": True, "False": False}).astype(bool)
-    games_df['winner'] = games_df['winner'].replace({"nan": None, "": None})
-    games_df['winner'] = games_df['winner'].where(games_df['winner'].notna(), None)
+    # Correctness = only when game finished & correct
+    merged['correct'] = (merged['completed'] == True) & (merged['selected_team'] == merged['winner'])
 
-    # Update correctness and scoring logic
-    merged['correct'] = merged['completed'] & (merged['selected_team'] == merged['winner'])
+    # Score = correct * point value
     merged['score'] = merged['correct'].astype(int) * merged['point_value']
 
-    # Summarize user total points
-    leaderboard_df = (
+    # Aggregate total points
+    totals = (
         merged.groupby('username', as_index=False)
         .agg({'score': 'sum'})
-        .sort_values(by='score', ascending=False)
+        .rename(columns={'score': 'total_points'})
     )
 
-    # Dense ranking
-    leaderboard_df['rank'] = (
-        leaderboard_df['score'].rank(method='dense', ascending=False).astype(int)
-    )
-
-    # Display sorted by rank then name
-    leaderboard_df = leaderboard_df.sort_values(['rank', 'username'])
+    # Ranking
+    totals['rank'] = totals['total_points'].rank(method='min', ascending=False).astype(int)
+    totals = totals.sort_values(['rank', 'username'])
 
     return render_template(
         'leaderboard.html',
-        leaderboard=leaderboard_df.to_dict(orient='records')
+        leaderboard=totals.to_dict(orient='records')
     )
+
 
 
 @app.route('/user/<username>')
@@ -419,7 +412,10 @@ def user_picks(username):
     merged['correct'] = (merged['completed'] == True) & \
                         (merged['selected_team'] == merged['winner'])
 
-    # Compute score (convert boolean → int)
+    # Ensure point_value is an integer
+    merged['point_value'] = merged['point_value'].astype(int)
+
+    # Compute score using integer point_value
     merged['score'] = merged['correct'].astype(int) * merged['point_value']
 
     # CSS class for green/red
