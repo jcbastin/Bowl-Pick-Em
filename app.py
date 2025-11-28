@@ -353,11 +353,14 @@ def leaderboard():
         else:
             merged['point_value'] = 0
 
-    # Correctness ONLY when the game is completed
-    merged['correct'] = merged['selected_team'] == merged['winner']
+    # Normalize boolean and winner fields in games_df
+    games_df['completed'] = games_df['completed'].replace({"True": True, "False": False}).astype(bool)
+    games_df['winner'] = games_df['winner'].replace({"nan": None, "": None})
+    games_df['winner'] = games_df['winner'].where(games_df['winner'].notna(), None)
 
-    # Final score for each pick
-    merged['score'] = merged['correct'] * merged['point_value']
+    # Update correctness and scoring logic
+    merged['correct'] = merged['completed'] & (merged['selected_team'] == merged['winner'])
+    merged['score'] = merged['correct'].astype(int) * merged['point_value']
 
     # Summarize user total points
     leaderboard_df = (
