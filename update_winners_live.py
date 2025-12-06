@@ -11,7 +11,7 @@ DEFAULT_DISK_DIR = "/opt/render/project/src/storage"
 DISK_DIR = os.getenv("DISK_DIR", DEFAULT_DISK_DIR)
 
 # Path to CSV
-CSV_PATH = os.path.join(DISK_DIR, "games.csv")   # <-- now using main games.csv
+CSV_PATH = "/opt/render/project/src/storage/games.csv"
 
 def fetch_all_games_for_week():
     """
