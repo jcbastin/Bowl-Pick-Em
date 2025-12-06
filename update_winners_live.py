@@ -96,6 +96,24 @@ def main():
 
             updated_any = True
 
+
+    print("📁 CWD:", os.getcwd())
+    print("📁 Listing /opt/render/project/src:")
+    try:
+        print(os.listdir("/opt/render/project/src"))
+    except Exception as e:
+        print("Error listing /opt/render/project/src:", e)
+
+    print("📁 Checking storage directory:")
+    print("Storage exists:", os.path.exists("/opt/render/project/src/storage"))
+
+    if os.path.exists("/opt/render/project/src/storage"):
+        print("📁 Contents of storage dir:", os.listdir("/opt/render/project/src/storage"))
+
+    print("📄 CSV_PATH being used:", CSV_PATH)
+    print("📄 Can read parent directory of CSV_PATH:", os.path.exists(os.path.dirname(CSV_PATH)))
+
+
     # Save updates
     if updated_any:
         try:
