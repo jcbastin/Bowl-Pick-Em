@@ -770,6 +770,17 @@ def api_test_update_results():
 
 
 # ======================================================
+#               UPDATE WINNERS
+# ======================================================
+@app.post("/internal/update_winners")
+def internal_update_winners():
+    # Only allow from cron, but skip security for now
+    import update_winners_live
+    update_winners_live.main()
+    return {"status": "ok"}
+
+
+# ======================================================
 #               LOGOS
 # ======================================================
 @app.route('/static/<path:filename>')
