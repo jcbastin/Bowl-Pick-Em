@@ -34,11 +34,22 @@ PICK_DEADLINE_PST = datetime(
     2025, 12, 13, 9, 0, 0, tzinfo=pytz.timezone("US/Pacific")
 )
 
+# ------------------------------------------------------
+# CHAMPIONSHIP DEADLINE — 9:30 PM PST, JANUARY 19, 2026
+# ------------------------------------------------------
+CHAMPIONSHIP_END_PST = datetime(
+    2026, 1, 19, 21, 30, 0, tzinfo=pytz.timezone("US/Pacific")
+)
+
 
 def picks_locked() -> bool:
     """Return True if the global pick deadline has passed."""
     now_pst = datetime.now(pytz.timezone("US/Pacific"))
     return now_pst >= PICK_DEADLINE_PST
+
+def championship_complete() -> bool:
+    now_pst = datetime.now(pytz.timezone("US/Pacific"))
+    return now_pst >= CHAMPIONSHIP_END_PST
 
 
 # ======================================================
@@ -876,6 +887,85 @@ def internal_update_winners():
     import update_winners_live
     update_winners_live.main()
     return {"status": "ok"}
+
+@app.route("/api/<group_name>/winner")
+@require_group
+def api_winner(group_name):
+    # If championship not finished, do not declare winner yet
+    if not championship_complete():
+        return {"winner": None}
+
+    picks_df = load_picks()
+    picks_df = picks_df[picks_df["group_name"] == group_name]
+
+    if picks_df.empty:
+        return {"winner": None}
+
+    games_df = load_games()
+    games_df["game_id"] = games_df["game_id"].astype(str)
+    picks_df["game_id"] = picks_df["game_id"].astype(str)
+
+    # Merge picks with results
+    merged = picks_df.merge(
+        games_df[["game_id", "winner", "completed", "spread", "home_team", "away_team"]],
+        on="game_id",
+        how="left"
+    )
+
+    # Score correct picks
+    merged["correct"] = (merged["completed"] == True) & (
+        merged["selected_team"] == merged["winner"]
+    )
+    merged["score"] = merged["correct"].astype(int) * merged["point_value"]
+
+    # Compute total points per user
+    totals = merged.groupby(["username", "name"], as_index=False)["score"].sum()
+    totals = totals.rename(columns={"score": "total_points"})
+
+    # Determine championship actual total points
+    # Find the national championship game (assume highest game_id OR name includes "Championship")
+    champ_game = games_df[games_df["bowl_name"].str.contains("Champ", case=False, na=False)]
+
+    if champ_game.empty:
+        return {"winner": None}
+
+    champ_row = champ_game.iloc[0]
+
+    # Assume your spreadsheet already stores final points OR add them later
+    try:
+        champ_total_points = int(champ_row["home_points"]) + int(champ_row["away_points"])
+    except:
+        # If data not ready, do not declare a winner
+        return {"winner": None}
+
+    # Load all user tiebreakers
+    tb_df = load_tiebreakers()
+    tb_df = tb_df[tb_df["group_name"] == group_name]
+
+    # Merge totals with tiebreakers
+    totals = totals.merge(tb_df[["username", "tiebreaker"]], on="username", how="left")
+
+    # Replace missing tiebreakers with very large error (they lose the tiebreaker)
+    totals["tiebreaker"] = totals["tiebreaker"].fillna(9999)
+
+    # Compute tiebreaker error
+    totals["tb_error"] = (totals["tiebreaker"] - champ_total_points).abs()
+
+    # Sort:
+    # 1. Highest total_points
+    # 2. Lowest tb_error
+    totals = totals.sort_values(["total_points", "tb_error"], ascending=[False, True])
+
+    winner = totals.iloc[0]
+
+    return {
+        "winner": {
+            "username": winner["username"],
+            "name": winner["name"],
+            "total_points": int(winner["total_points"]),
+            "tiebreaker": int(winner["tiebreaker"]),
+        }
+    }
 
 
 # ======================================================
