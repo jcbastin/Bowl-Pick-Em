@@ -1061,6 +1061,18 @@ def update_spreads():
         )
         resp.raise_for_status()
         odds = resp.json()
+    print("\n=== CFBD POSTSEASON ODDS DEBUG ===")
+    for game in odds:
+        gid = game.get("id")
+        lines = game.get("lines", [])
+        if lines:
+            spread = lines[0].get("spread")
+        else:
+            spread = None
+
+    print(f"Game ID: {gid}, Spread: {spread}, Teams: {game.get('homeTeam')} vs {game.get('awayTeam')}, Notes: {game.get('notes')}")
+print("=== END DEBUG ===\n")
+
     except Exception as e:
         return {"error": f"Failed to fetch odds: {e}"}, 500
 
