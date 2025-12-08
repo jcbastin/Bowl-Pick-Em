@@ -144,7 +144,6 @@ def main():
 
         matched_game = None
 
-        # Try to find corresponding API game
         for api_game in odds:
             api_home = api_game["home_team"]
             api_away = api_game["away_team"]
@@ -157,7 +156,6 @@ def main():
             print(f"[NO MATCH] {csv_away} vs {csv_home}")
             continue
 
-        # Extract consensus spread
         bookmakers = matched_game.get("bookmakers", [])
         spread_value = extract_consensus_spread(bookmakers, csv_home, csv_away)
 
@@ -168,11 +166,15 @@ def main():
 
         games.at[idx, "spread"] = spread_value
 
-    # Save final CSV
     print("\nSaving updated CSV...")
     games.to_csv(CSV_PATH, index=False)
     print("DONE.")
 
+# ---------------------------------------------------------
+# Required export for Render cron job
+# ---------------------------------------------------------
+def update_spreads():
+    main()
 
 if __name__ == "__main__":
     main()
