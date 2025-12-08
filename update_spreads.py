@@ -66,7 +66,9 @@ def update_spreads():
         return
 
     updated_count = 0
-    df["cfbd_game_id"] = pd.to_numeric(df["cfbd_game_id"], errors="coerce")
+    # Clean the cfbd_game_id column
+    df["cfbd_game_id"] = pd.to_numeric(df["cfbd_game_id"], errors="coerce").astype("Int64")
+
 
     spread_map = {}
     for entry in lines_data:
@@ -79,11 +81,16 @@ def update_spreads():
     print(f"[INFO] Found {len(spread_map)} spreads.")
 
     for idx, row in df.iterrows():
-        gid = row["cfbd_game_id"]
-        if gid in spread_map:
-            df.at[idx, "spread"] = spread_map[gid]
-            updated_count += 1
-            print(f"[UPDATE] Game {gid}: spread → {spread_map[gid]}")
+    if pd.isna(row["cfbd_game_id"]):
+        continue
+
+    gid = int(row["cfbd_game_id"])
+
+    if gid in spread_map:
+        df.at[idx, "spread"] = spread_map[gid]
+        updated_count += 1
+        print(f"[UPDATE] Game {gid}: spread → {spread_map[gid]}")
+
 
     # --- DEBUG: PRINT DF BEFORE SAVING ---
     print("\n[DEBUG] DataFrame spreads before saving:")
