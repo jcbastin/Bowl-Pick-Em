@@ -1,180 +1,75 @@
 import os
-import re
-import pandas as pd
 import requests
+import pandas as pd
 
-# ---------------------------------------------------------
-# ENV + CONFIG
-# ---------------------------------------------------------
+# ---- Paths ----
+CSV_PATH = "/opt/render/project/src/storage/games.csv"
 
-API_KEY = os.getenv("ODDS_API_KEY")  # must be set in Render
-ODDS_URL = "https://api.the-odds-api.com/v4/sports/americanfootball_ncaaf/odds/"
+# ---- CFBD Key ----
+CFBD_KEY = os.getenv("CFBD_API_KEY")
+HEADERS = {"Authorization": f"Bearer {CFBD_KEY}"}
 
-DISK_DIR = os.getenv("DISK_DIR", "/opt/render/project/src/storage")
-CSV_PATH = os.path.join(DISK_DIR, "games.csv")
+# ---- Provider Priority ----
+PROVIDER_PRIORITY = ["DraftKings", "Bovada"]
 
-# ---------------------------------------------------------
-# TEAM NAME NORMALIZATION
-# ---------------------------------------------------------
 
-def school_key(name: str) -> str:
+def choose_spread(lines):
     """
-    Extracts only the school name portion of a team identity by removing mascots.
-    Safe for fuzzy matching pairwise (avoids Arizona vs Arizona State, etc.)
+    Select spread using priority (DraftKings -> Bovada -> first available).
     """
-    if not name:
-        return ""
-    
-    # lowercase
-    n = name.lower()
+    # Priority providers
+    for provider in PROVIDER_PRIORITY:
+        for item in lines:
+            if item.get("provider") == provider and item.get("spread") is not None:
+                return item["spread"]
 
-    # normalize punctuation
-    n = n.replace("&", "and")
-    n = re.sub(r"[^a-z0-9\s]", "", n)
+    # Fallback: first available spread
+    for item in lines:
+        if item.get("spread") is not None:
+            return item["spread"]
 
-    tokens = n.split()
+    return None
 
-    mascots = {
-        "aggies","broncos","buckeyes","tigers","wildcats","panthers","knights",
-        "huskies","spartans","trojans","mountaineers","cougars","cardinal",
-        "bulldogs","jayhawks","rebels","volunteers","gators","ducks","bruins",
-        "longhorns","seminoles","hurricanes","blazers","sun","devils","devil",
-        "gamecocks","pirates","cowboys","raiders","wolfpack","csv","crusaders",
-        "paladins","hog","horned","frogs","patriots","wolverines"
-    }
-
-    # keep only non-mascot tokens
-    filtered = [t for t in tokens if t not in mascots]
-
-    return " ".join(filtered).strip()
-
-
-def pair_matches(csv_home, csv_away, api_home, api_away):
-    """
-    Determines if the CSV home/away pair matches the Odds API home/away pair.
-    This prevents incorrect fuzzy matches (e.g., Arizona vs Arizona State).
-    """
-    ch = school_key(csv_home)
-    ca = school_key(csv_away)
-    ah = school_key(api_home)
-    aa = school_key(api_away)
-
-    # Direct (home/away)
-    if ch == ah and ca == aa:
-        return True
-    
-    # Reversed (away/home)
-    if ch == aa and ca == ah:
-        return True
-
-    return False
-
-
-# ---------------------------------------------------------
-# SPREAD EXTRACTION
-# ---------------------------------------------------------
-
-def extract_consensus_spread(bookmakers, home_team, away_team):
-    """
-    Returns the average spread (home spread) across all sportsbooks.
-    Spread is negative if home is favored.
-    """
-    home_key = school_key(home_team)
-    away_key = school_key(away_team)
-
-    spread_values = []
-
-    for b in bookmakers:
-        for m in b.get("markets", []):
-            if m.get("key") != "spreads":
-                continue
-
-            outcomes = m.get("outcomes", [])
-            home_point = None
-            away_point = None
-
-            for o in outcomes:
-                okey = school_key(o["name"])
-                point = o.get("point")
-
-                if okey == home_key:
-                    home_point = point
-                elif okey == away_key:
-                    away_point = point
-
-            if home_point is not None and away_point is not None:
-                spread_values.append(home_point)
-
-    if not spread_values:
-        return ""
-
-    return round(sum(spread_values) / len(spread_values), 1)
-
-
-# ---------------------------------------------------------
-# MAIN SCRIPT
-# ---------------------------------------------------------
 
 def main():
-    print(f"Loading CSV: {CSV_PATH}")
-    games = pd.read_csv(CSV_PATH)
+    df = pd.read_csv(CSV_PATH)
 
-    print("Fetching spreads from The Odds API...")
-    params = {
-        "apiKey": API_KEY,
-        "regions": "us",
-        "markets": "spreads",
-        "oddsFormat": "decimal",
-        "dateFormat": "iso"
-    }
-
-    res = requests.get(ODDS_URL, params=params)
-
-    if res.status_code != 200:
-        print("ERROR fetching Odds API:", res.text)
+    if CFBD_KEY is None:
+        print("ERROR: CFBD_API_KEY is missing.")
         return
 
-    odds = res.json()
-    print(f"Retrieved {len(odds)} Odds API games.\n")
+    updated_count = 0
 
-    # Process each game in CSV
-    for idx, row in games.iterrows():
-        csv_home = row["home_team"]
-        csv_away = row["away_team"]
+    for idx, row in df.iterrows():
+        game_id = row.get("cfbd_game_id")
 
-        matched_game = None
-
-        for api_game in odds:
-            api_home = api_game["home_team"]
-            api_away = api_game["away_team"]
-
-            if pair_matches(csv_home, csv_away, api_home, api_away):
-                matched_game = api_game
-                break
-
-        if matched_game is None:
-            print(f"[NO MATCH] {csv_away} vs {csv_home}")
+        # skip missing IDs
+        if pd.isna(game_id):
             continue
 
-        bookmakers = matched_game.get("bookmakers", [])
-        spread_value = extract_consensus_spread(bookmakers, csv_home, csv_away)
+        url = f"https://api.collegefootballdata.com/lines?gameId={int(game_id)}"
+        response = requests.get(url, headers=HEADERS)
 
-        if spread_value == "":
-            print(f"[MATCHED but no spread] {csv_away} vs {csv_home}")
-        else:
-            print(f"[UPDATED] {csv_away} vs {csv_home} → spread {spread_value}")
+        if response.status_code != 200:
+            print(f"[{game_id}] CFBD ERROR:", response.text)
+            continue
 
-        games.at[idx, "spread"] = spread_value
+        data = response.json()
 
-    print("\nSaving updated CSV...")
-    games.to_csv(CSV_PATH, index=False)
-    print("DONE.")
+        if not data or "lines" not in data[0] or not data[0]["lines"]:
+            print(f"[{game_id}] No line data found")
+            continue
 
-# ---------------------------------------------------------
-# Required export for Render cron job
-# ---------------------------------------------------------
-def update_spreads():
-    main()
+        spread = choose_spread(data[0]["lines"])
+
+        print(f"{row['away_team']} vs {row['home_team']} -> spread: {spread}")
+
+        df.at[idx, "spread"] = spread
+        updated_count += 1
+
+    df.to_csv(CSV_PATH, index=False)
+    print(f"Completed spread update for {updated_count} games.")
+
 
 if __name__ == "__main__":
     main()
