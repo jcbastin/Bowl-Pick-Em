@@ -419,13 +419,16 @@ def api_confirm_picks(group_name):
     new_token = uuid.uuid4().hex
 
     token_df = pd.concat([
-        token_df,
-        pd.DataFrame([{
-            "token": new_token,
-            "group": group_name,
-            "username": username
-        }])
-    ], ignore_index=True)
+    token_df,
+    pd.DataFrame([{
+        "token": new_token,
+        "group": group_name,
+        "username": username,
+        "name": name,
+        "tiebreaker": tiebreaker if tiebreaker is not None else ""
+    }])
+], ignore_index=True)
+
 
     # Save token CSV
     token_df.to_csv(token_path, index=False)
@@ -1047,9 +1050,7 @@ def internal_update_spreads():
 
 
 
-# ======================================================
-#       PUBLIC PERMALINK FOR USER PICKS BY TOKEN
-# ======================================================
+# ===== PUBLIC PERMALINK LOOKUP =====
 @app.route('/api/p/<token>')
 def api_get_picks_by_token(token):
     token_path = f"{DISK_DIR}/user_tokens.csv"
@@ -1058,8 +1059,8 @@ def api_get_picks_by_token(token):
         return jsonify({"error": "Token storage missing"}), 500
 
     tokens = pd.read_csv(token_path)
-
     row = tokens[tokens["token"] == token]
+
     if row.empty:
         return jsonify({"error": "Invalid link"}), 404
 
@@ -1081,6 +1082,13 @@ def api_get_picks_by_token(token):
         "tiebreaker": tiebreaker,
         "picks": picks_df.to_dict(orient="records")
     })
+
+
+# Human-friendly frontend permalink
+@app.route('/p/<token>')
+def permalink_redirect(token):
+    return api_get_picks_by_token(token)
+
 
 
 
