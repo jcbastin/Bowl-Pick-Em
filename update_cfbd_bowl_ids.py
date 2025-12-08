@@ -1,4 +1,3 @@
-team,wins,losses,ties,record
 import pandas as pd
 import requests
 import os

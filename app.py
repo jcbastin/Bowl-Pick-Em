@@ -1,4 +1,4 @@
-from flask import Flask, request, send_from_directory
+from flask import Flask, request, send_from_directory, jsonify
 import pandas as pd
 import os
 from dotenv import load_dotenv
@@ -6,6 +6,8 @@ from datetime import datetime
 import pytz
 from functools import wraps
 from flask_cors import CORS
+import uuid
+import requests  # needed for update_spreads
 
 
 # ======================================================
@@ -47,9 +49,14 @@ def picks_locked() -> bool:
     now_pst = datetime.now(pytz.timezone("US/Pacific"))
     return now_pst >= PICK_DEADLINE_PST
 
+
 def championship_complete() -> bool:
     now_pst = datetime.now(pytz.timezone("US/Pacific"))
     return now_pst >= CHAMPIONSHIP_END_PST
+
+
+def generate_user_token():
+    return uuid.uuid4().hex
 
 
 # ======================================================
@@ -86,6 +93,11 @@ def seed_disk():
 
 # Run seeding at startup (only once per deploy)
 seed_disk()
+
+# Ensure user_tokens.csv exists
+TOKENS_PATH = f"{DISK_DIR}/user_tokens.csv"
+if not os.path.exists(TOKENS_PATH):
+    pd.DataFrame(columns=["token", "group", "username"]).to_csv(TOKENS_PATH, index=False)
 
 
 # ======================================================
@@ -146,6 +158,9 @@ def load_games() -> pd.DataFrame:
                 "network",
                 "status",
                 "spread",
+                "away_score",
+                "home_score",
+                "cfbd_game_id",
             ]
         )
 
@@ -267,7 +282,7 @@ def api_save_session_picks(group_name):
         return {"error": "Missing JSON body"}, 400
 
     username = data.get("username", "").strip()
-    name = data.get("name", "").strip()  # necessary for session save
+    name = data.get("name", "").strip()  # necessary for session save (kept for future use)
     point_value = data.get("point_value")
     raw_picks = data.get("picks")
 
@@ -310,6 +325,9 @@ def api_save_session_picks(group_name):
     return {"success": True}, 200
 
 
+# ------------------------------
+# Create user (pre-seed picks.csv rows)
+# ------------------------------
 @app.route("/api/create-user", methods=["POST"])
 def api_create_user():
     data = request.get_json()
@@ -364,6 +382,7 @@ def api_create_user():
 
 # ------------------------------
 # Final submission — writes canonical picks to picks.csv
+# and generates permalink token + tiebreaker
 # ------------------------------
 @app.route("/api/<group_name>/confirm_picks", methods=["POST"])
 @require_group
@@ -373,9 +392,47 @@ def api_confirm_picks(group_name):
     username = data.get("username", "").strip()
     name = data.get("name", "").strip()
     picks = data.get("picks")  # dict: game_id → selected_team
+    tiebreaker = data.get("tiebreaker")
 
-    # Handle tiebreaker submission
-    tiebreaker = data.get("tiebreaker", None)
+    if not username or not picks:
+        return {"error": "Missing username or picks"}, 400
+
+    # ======================================================
+    # 1. Generate permalink token
+    # ======================================================
+    token_path = f"{DISK_DIR}/user_tokens.csv"
+
+    if os.path.exists(token_path):
+        token_df = pd.read_csv(token_path)
+    else:
+        token_df = pd.DataFrame(columns=["token", "group", "username"])
+
+    # Remove old tokens for this user/group
+    token_df = token_df[
+        ~(
+            (token_df["group"] == group_name) &
+            (token_df["username"] == username)
+        )
+    ]
+
+    # Create new token
+    new_token = uuid.uuid4().hex
+
+    token_df = pd.concat([
+        token_df,
+        pd.DataFrame([{
+            "token": new_token,
+            "group": group_name,
+            "username": username
+        }])
+    ], ignore_index=True)
+
+    # Save token CSV
+    token_df.to_csv(token_path, index=False)
+
+    # ======================================================
+    # 2. Save tiebreaker (if present)
+    # ======================================================
     if tiebreaker is not None:
         try:
             tiebreaker = int(tiebreaker)
@@ -383,9 +440,9 @@ def api_confirm_picks(group_name):
         except Exception:
             pass
 
-    if not username or not picks:
-        return {"error": "Missing username or picks"}, 400
-
+    # ======================================================
+    # 3. Save picks to picks.csv
+    # ======================================================
     games_df = load_games()
     games_df["game_id"] = games_df["game_id"].astype(str)
 
@@ -405,57 +462,54 @@ def api_confirm_picks(group_name):
             ]
         )
 
-    # Drop old rows for this user & group
-    if "group_name" not in picks_df.columns:
-        picks_df["group_name"] = ""
-    if "username" not in picks_df.columns:
-        picks_df["username"] = ""
-
+    # Remove this user's old picks
     picks_df = picks_df[
         ~(
-            (picks_df["group_name"] == group_name)
-            & (picks_df["username"] == username)
+            (picks_df["group_name"] == group_name) &
+            (picks_df["username"] == username)
         )
     ]
 
-    # Build new rows
+    # Build new pick rows
     new_rows = []
     for game_id, team_name in picks.items():
-        # Look up point_value from games
         match = games_df.loc[games_df["game_id"] == str(game_id)]
         if match.empty:
-            # Ignore invalid game ids instead of crashing
             continue
         point_val = match["point_value"].values[0]
 
-        new_rows.append(
-            {
-                "group_name": group_name,
-                "username": username,
-                "name": name or username,
-                "game_id": str(game_id),
-                "selected_team": team_name,
-                "point_value": int(point_val),
-            }
-        )
+        new_rows.append({
+            "group_name": group_name,
+            "username": username,
+            "name": name or username,
+            "game_id": str(game_id),
+            "selected_team": team_name,
+            "point_value": int(point_val),
+        })
 
+    # Append & dedupe
     if new_rows:
         new_df = pd.DataFrame(new_rows)
         final_df = pd.concat([picks_df, new_df], ignore_index=True)
     else:
         final_df = picks_df
 
-    # Normalize and deduplicate
     final_df = final_df.drop_duplicates(
-        subset=["group_name", "username", "game_id"], keep="last"
+        subset=["group_name", "username", "game_id"],
+        keep="last"
     )
-    final_df["game_id"] = final_df["game_id"].astype(str)
 
     final_df.to_csv(picks_path, index=False)
 
-    return {"success": True}, 200
+    # ======================================================
+    # 4. Return success with token
+    # ======================================================
+    return {"success": True, "token": new_token}, 200
 
 
+# ======================================================
+# GET TIEBREAKER
+# ======================================================
 @app.route("/api/<group_name>/get_tiebreaker")
 @require_group
 def api_get_tiebreaker(group_name):
@@ -464,6 +518,7 @@ def api_get_tiebreaker(group_name):
         return {"error": "Missing username"}, 400
 
     df = load_tiebreakers()
+
     row = df[
         (df["group_name"] == group_name) &
         (df["username"] == username)
@@ -726,7 +781,7 @@ def api_picks_board(group_name):
     picks_df["game_id"] = picks_df["game_id"].astype(str)
     games_df["game_id"] = games_df["game_id"].astype(str)
 
-    # FIX: Rename game point_value → game_point_value to avoid collision
+    # Rename game point_value → game_point_value to avoid collision
     games_df = games_df.rename(columns={"point_value": "game_point_value"})
 
     # Build ordered games list
@@ -809,7 +864,7 @@ def api_picks_board(group_name):
                 "display_name": f"{username} ({real_name})" if real_name else username,
                 "total_points": total_points,
                 "picks": pick_map,
-                "tiebreaker": tiebreaker_value,  # NEW FIELD
+                "tiebreaker": tiebreaker_value,
             }
         )
 
@@ -817,6 +872,9 @@ def api_picks_board(group_name):
     return {"games": games_meta, "users": users_output}
 
 
+# ------------------------------
+# Test route: randomize winners for all incomplete games
+# ------------------------------
 @app.route("/api/test/update_results", methods=["GET", "POST"])
 def api_test_update_results():
     """
@@ -879,7 +937,7 @@ def api_pick_lock_status():
 
 
 # ======================================================
-#               UPDATE WINNERS
+#               UPDATE WINNERS (CFBD live winners)
 # ======================================================
 @app.post("/internal/update_winners")
 def internal_update_winners():
@@ -889,6 +947,9 @@ def internal_update_winners():
     return {"status": "ok"}
 
 
+# ======================================================
+#               WINNER (AFTER CHAMPIONSHIP)
+# ======================================================
 @app.route("/api/<group_name>/winner")
 @require_group
 def api_winner(group_name):
@@ -924,18 +985,22 @@ def api_winner(group_name):
     totals = totals.rename(columns={"score": "total_points"})
 
     # Determine championship actual total points
-    # Find the national championship game (assume highest game_id OR name includes "Championship")
-    champ_game = games_df[games_df["bowl_name"].str.contains("Champ", case=False, na=False)]
+    # Find the national championship game (bowl_name contains "National Championship")
+    champ_game = games_df[
+        games_df["bowl_name"].str.contains("National Championship", case=False, na=False)
+    ]
 
     if champ_game.empty:
         return {"winner": None}
 
     champ_row = champ_game.iloc[0]
 
-    # Assume your spreadsheet already stores final points OR add them later
+    # Use home_score and away_score from games.csv
     try:
-        champ_total_points = int(champ_row["home_points"]) + int(champ_row["away_points"])
-    except:
+        champ_home = int(champ_row["home_score"])
+        champ_away = int(champ_row["away_score"])
+        champ_total_points = champ_home + champ_away
+    except Exception:
         # If data not ready, do not declare a winner
         return {"winner": None}
 
@@ -970,7 +1035,104 @@ def api_winner(group_name):
 
 
 # ======================================================
-#               LOGOS
+#               UPDATE SPREADS (CFBD odds)
+# ======================================================
+@app.route("/internal/update_spreads", methods=["POST"])
+def update_spreads():
+    """
+    Updates the spread lines for all games based on live odds.
+    This MUST run on Render so it can write to the real games.csv.
+    """
+
+    CSV_PATH = "/opt/render/project/src/storage/games.csv"
+
+    try:
+        df = pd.read_csv(CSV_PATH)
+    except Exception as e:
+        return {"error": f"Failed to load games.csv: {e}"}, 500
+
+    # Call the API to fetch spreads (CFBD Lines endpoint)
+    try:
+        resp = requests.get(
+            "https://api.collegefootballdata.com/lines",
+            params={"year": 2025, "seasonType": "postseason"},
+            headers={"Authorization": f"Bearer {os.getenv('CFBD_API_KEY')}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        odds = resp.json()
+    except Exception as e:
+        return {"error": f"Failed to fetch odds: {e}"}, 500
+
+    # Build a lookup of spreads by CFBD game id
+    spread_lookup = {}
+
+    for game in odds:
+        game_id = game["id"]
+        # Each book may have multiple lines—choose the first (or latest depending on API ordering)
+        if game.get("lines"):
+            line_info = game["lines"][0]
+            spread = line_info.get("spread")
+            spread_lookup[game_id] = spread
+
+    updated = False
+
+    # Apply spreads to your CSV rows
+    for idx, row in df.iterrows():
+        game_id = row.get("cfbd_game_id")
+        if pd.isna(game_id):
+            continue
+
+        game_id = int(game_id)
+        new_spread = spread_lookup.get(game_id)
+
+        if new_spread is not None and df.loc[idx, "spread"] != new_spread:
+            df.loc[idx, "spread"] = new_spread
+            updated = True
+
+    # Save changes
+    if updated:
+        df.to_csv(CSV_PATH, index=False)
+        return {"status": "updated spreads"}, 200
+
+    return {"status": "no changes"}, 200
+
+
+# ======================================================
+#       PUBLIC PERMALINK FOR USER PICKS BY TOKEN
+# ======================================================
+@app.route('/api/p/<token>')
+def api_get_picks_by_token(token):
+    token_path = f"{DISK_DIR}/user_tokens.csv"
+
+    if not os.path.exists(token_path):
+        return jsonify({"error": "Token storage missing"}), 500
+
+    tokens = pd.read_csv(token_path)
+
+    row = tokens[tokens["token"] == token]
+    if row.empty:
+        return jsonify({"error": "Invalid link"}), 404
+
+    group = row.iloc[0]["group"]
+    username = row.iloc[0]["username"]
+
+    # reuse existing logic
+    picks_df = load_picks()
+    picks_df = picks_df[
+        (picks_df["group_name"] == group) &
+        (picks_df["username"] == username)
+    ]
+
+    return jsonify({
+        "group": group,
+        "username": username,
+        "picks": picks_df.to_dict(orient="records")
+    })
+
+
+# ======================================================
+#               LOGOS / STATIC FILES
 # ======================================================
 @app.route("/static/<path:filename>")
 def static_files(filename):
