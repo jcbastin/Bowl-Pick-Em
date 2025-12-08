@@ -1,4 +1,4 @@
-game_id,bowl_name,kickoff_datetime,point_value,away_team,home_team,away_rank,home_rank,away_record,home_record,status,winner,completed,away_score,home_score,cfbd_game_id,away_logo,home_logo,location,network,
+game_id,bowl_name,kickoff_datetime,point_value,away_team,home_team,away_rank,home_rank,away_record,home_record,status,winner,completed,away_score,home_score,cfbd_game_id,away_logo,home_logo,location,network,spread
 1,Cricket Celebration Bowl,2025-12-13 12:00:00,1,South Carolina State,Prairie View A&M,,,9-3,10-3,NOT_STARTED,,False,,,401778123,/static/logos/South_Carolina_State.png,/static/logos/Prairie_View_AM.png,"Mercedes-Benz Stadium, Atlanta, GA",ABC,
 2,Bucked Up LA Bowl,2025-12-13 20:00:00,1,Boise State,Washington,,,9-4,8-4,NOT_STARTED,,False,,,401778302,/static/logos/Boise_State.png,/static/logos/Washington.png,"SoFi Stadium, Inglewood, CA",ABC,
 3,IS4S Salute to Veterans Bowl,2025-12-16 21:00:00,1,Troy,Jacksonville State,,,8-5,8-5,NOT_STARTED,,False,,,401778303,/static/logos/Troy.png,/static/logos/Jacksonville_State.png,"Cramton Bowl, Montgomery, AL",ESPN,
