@@ -1040,8 +1040,8 @@ def api_winner(group_name):
 @app.route("/internal/update_spreads", methods=["POST"])
 def update_spreads():
     """
-    Updates the spread lines for all games based on live odds.
-    This MUST run on Render so it can write to the real games.csv.
+    Updates bowl-game spreads using CFBD /lines endpoint.
+    Only updates rows with a valid cfbd_game_id.
     """
 
     CSV_PATH = "/opt/render/project/src/storage/games.csv"
@@ -1051,7 +1051,7 @@ def update_spreads():
     except Exception as e:
         return {"error": f"Failed to load games.csv: {e}"}, 500
 
-    # Call the API to fetch spreads (CFBD Lines endpoint)
+    # Fetch bowl spreads from CFBD
     try:
         resp = requests.get(
             "https://api.collegefootballdata.com/lines",
@@ -1061,51 +1061,51 @@ def update_spreads():
         )
         resp.raise_for_status()
         odds = resp.json()
-    print("\n=== CFBD POSTSEASON ODDS DEBUG ===")
-    for game in odds:
-        gid = game.get("id")
-        lines = game.get("lines", [])
-        if lines:
-            spread = lines[0].get("spread")
-        else:
-            spread = None
-
-    print(f"Game ID: {gid}, Spread: {spread}, Teams: {game.get('homeTeam')} vs {game.get('awayTeam')}, Notes: {game.get('notes')}")
-print("=== END DEBUG ===\n")
-
     except Exception as e:
         return {"error": f"Failed to fetch odds: {e}"}, 500
 
-    # Build a lookup of spreads by CFBD game id
+    # Build a map: cfbd_game_id → spread
     spread_lookup = {}
-
     for game in odds:
-        game_id = game["id"]
-        # Each book may have multiple lines—choose the first (or latest depending on API ordering)
-        if game.get("lines"):
-            line_info = game["lines"][0]
-            spread = line_info.get("spread")
-            spread_lookup[game_id] = spread
-
-    updated = False
-
-    # Apply spreads to your CSV rows
-    for idx, row in df.iterrows():
-        game_id = row.get("cfbd_game_id")
-        if pd.isna(game_id):
+        gid = game.get("id")
+        if not gid:
             continue
 
-        game_id = int(game_id)
-        new_spread = spread_lookup.get(game_id)
+        # Each game has a list of “lines” from different sportsbooks
+        lines = game.get("lines", [])
+        if not lines:
+            continue
 
-        if new_spread is not None and df.loc[idx, "spread"] != new_spread:
-            df.loc[idx, "spread"] = new_spread
-            updated = True
+        # Pick first provider's line (or you can match "DraftKings")
+        line = lines[0]
 
-    # Save changes
-    if updated:
+        spread = line.get("spread")
+
+        if spread is not None:
+            spread_lookup[int(gid)] = spread
+
+    updated_rows = 0
+
+    # Apply spreads to CSV
+    for idx, row in df.iterrows():
+        cfbd_id = row.get("cfbd_game_id")
+
+        if pd.isna(cfbd_id):
+            continue
+
+        cfbd_id = int(cfbd_id)
+
+        if cfbd_id in spread_lookup:
+            new_spread = spread_lookup[cfbd_id]
+
+            if df.loc[idx, "spread"] != new_spread:
+                df.loc[idx, "spread"] = new_spread
+                updated_rows += 1
+
+    # Save CSV if needed
+    if updated_rows > 0:
         df.to_csv(CSV_PATH, index=False)
-        return {"status": "updated spreads"}, 200
+        return {"status": "updated spreads", "updated_rows": updated_rows}, 200
 
     return {"status": "no changes"}, 200
 
