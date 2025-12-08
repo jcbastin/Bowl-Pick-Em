@@ -90,7 +90,22 @@ def update_spreads():
     print(df[["cfbd_game_id", "spread"]].head(20))
     print("[DEBUG] End DataFrame dump\n")
 
+    # Remove unnamed junk columns
+    df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
+
+    # Ensure spread column exists
+    if "spread" not in df.columns:
+        df["spread"] = None
+
+    # Force spread to be the last column
+    cols = [c for c in df.columns if c != "spread"] + ["spread"]
+    df = df[cols]
+
+    print("\n[DEBUG] Final columns:", df.columns.tolist())
+
+    # Save clean CSV
     df.to_csv(CSV_PATH, index=False)
+
 
     print(f"[DONE] Updated {updated_count} spreads.")
     print(f"[DONE] Saved to {CSV_PATH}")
