@@ -984,6 +984,14 @@ def api_pick_lock_status():
         "deadline_iso": PICK_DEADLINE_PST.isoformat()
     }
 
+@app.route("/api/<group_name>/pick-lock-status")
+@require_group
+def api_group_pick_lock_status(group_name):
+    return {
+        "picks_locked": picks_locked(),
+        "deadline_iso": PICK_DEADLINE_PST.isoformat()
+    }
+
 
 # ======================================================
 #               UPDATE WINNERS (CFBD live winners)
