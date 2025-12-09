@@ -588,6 +588,37 @@ def api_get_user_picks(group_name):
 
     return filtered.to_dict(orient="records")
 
+# ------------------------------
+# Pick Lock Status
+# ------------------------------
+@app.get("/api/<group_name>/pick-lock-status")
+@require_group
+def api_pick_lock_status(group_name):
+    return {
+        "picks_locked": picks_locked(),
+        "deadline_iso": PICK_DEADLINE_PST.isoformat()
+    }
+
+# ------------------------------
+# User status — has submitted? 
+# ------------------------------
+@app.get("/api/<group_name>/has_submitted_picks")
+@require_group
+def api_has_submitted_picks(group_name):
+    username = request.args.get("username", "").strip().lower()
+    
+    if not username:
+        return {"has_submitted": False}
+
+    picks_df = load_picks()
+    total_games = len(load_games())
+
+    user_picks = picks_df[
+        (picks_df["group_name"].str.lower() == group_name.lower()) &
+        (picks_df["username"].str.lower() == username)
+    ]
+
+    return {"has_submitted": len(user_picks) == total_games}
 
 # ------------------------------
 # User status — has submitted? is locked?
@@ -894,9 +925,8 @@ def api_picks_board(group_name):
     return {"games": games_meta, "users": users_output}
 
 # ------------------------------
-# Check Username (full logic)
+# Check Username (correct format for frontend)
 # ------------------------------
-# ---- Correct username check (matches frontend EXACTLY) ----
 @app.get("/api/<group_name>/check_username")
 @require_group
 def api_check_username(group_name):
@@ -908,37 +938,26 @@ def api_check_username(group_name):
     picks_df = load_picks()
     group_lower = group_name.lower()
 
-    # Look for username
-    user_row = users_df[
+    # USER DOES NOT EXIST
+    matching_user = users_df[
         (users_df["group_name"].str.lower() == group_lower) &
         (users_df["username"].str.lower() == username)
     ]
 
-    # USERNAME DOES NOT EXIST
-    if user_row.empty:
-        return {
-            "available": True,
-            "reason": "new"
-        }
+    if matching_user.empty:
+        return { "available": True, "reason": "new" }
 
-    # Username exists → check picks
+    # USER EXISTS → CHECK IF THEY SUBMITTED PICKS
     user_picks = picks_df[
         (picks_df["group_name"].str.lower() == group_lower) &
         (picks_df["username"].str.lower() == username)
     ]
 
-    # USER HAS SUBMITTED → BLOCK
     if len(user_picks) > 0:
-        return {
-            "available": False,
-            "reason": "submitted"
-        }
+        return { "available": False, "reason": "submitted" }
 
-    # USER EXISTS BUT NO PICKS SUBMITTED → ALLOW RESUME
-    return {
-        "available": True,
-        "reason": "exists_no_picks"
-    }
+    # USER EXISTS WITH NO PICKS → ALLOW RESUME
+    return { "available": True, "reason": "exists_no_picks" }
 
 
 # ======================================================
