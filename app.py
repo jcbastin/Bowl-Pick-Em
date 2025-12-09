@@ -1048,6 +1048,30 @@ def api_winner(group_name):
         }
     }
 
+@app.route("/api/<group_name>/<username>/has-submitted", methods=["GET"])
+@require_group
+def api_has_submitted(group_name, username):
+    username = username.strip()
+    if not username:
+        return {"submitted": False}
+
+    picks_df = load_picks()
+
+    # Filter just this group + username
+    user_picks = picks_df[
+        (picks_df["group_name"].str.lower() == group_name.lower()) &
+        (picks_df["username"].str.lower() == username.lower())
+    ]
+
+    # Check number of games
+    games_df = load_games()
+    total_games = len(games_df)
+
+    # Full submission = they have a pick for every game
+    submitted = len(user_picks) == total_games
+
+    return {"submitted": bool(submitted)}
+
 
 # ======================================================
 #               UPDATE SPREADS (CFBD odds)
