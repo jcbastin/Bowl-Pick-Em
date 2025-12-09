@@ -583,6 +583,38 @@ def api_get_user_picks(group_name):
     return filtered.to_dict(orient="records")
 
 # ------------------------------
+# Get user's tiebreaker (for "Your Picks" page)
+# ------------------------------
+@app.get("/api/<group_name>/get_tiebreaker")
+@require_group
+def api_get_tiebreaker(group_name):
+    username = request.args.get("username", "").strip().lower()
+    if not username:
+        return {"tiebreaker": None}, 200  # frontend handles null
+
+    users_df = load_users()
+    group_lower = group_name.lower()
+
+    row = users_df[
+        (users_df["group_name"].str.lower() == group_lower) &
+        (users_df["username"].str.lower() == username)
+    ]
+
+    # If user not found → return null tiebreaker so frontend still works
+    if row.empty:
+        return {"tiebreaker": None}, 200
+
+    raw_tb = row.iloc[0].get("tiebreaker", "")
+    if pd.isna(raw_tb) or str(raw_tb).strip() == "":
+        return {"tiebreaker": None}, 200
+
+    try:
+        return {"tiebreaker": int(float(raw_tb))}, 200
+    except:
+        return {"tiebreaker": raw_tb}, 200
+
+
+# ------------------------------
 # Pick Lock Status
 # ------------------------------
 @app.get("/api/<group_name>/pick-lock-status")
