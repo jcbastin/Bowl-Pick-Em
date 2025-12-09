@@ -729,8 +729,12 @@ def api_picks_board(group_name):
     print("\n===== PICKS BOARD DEBUG =====", flush=True)
     print("URL group_name:", repr(group_name), flush=True)
 
+    # ---------------------------
+    # Load picks
+    # ---------------------------
     picks_path = f"{DISK_DIR}/picks.csv"
     print("picks.csv exists?", os.path.exists(picks_path), flush=True)
+    
 
     if os.path.exists(picks_path):
         print("First 5 lines of picks.csv:", flush=True)
@@ -742,16 +746,23 @@ def api_picks_board(group_name):
         print("picks.csv missing!", flush=True)
 
     picks_df = pd.read_csv(picks_path)
+    picks_df["username"] = picks_df["username"].str.lower()
 
-    # Load tiebreakers for all users in this group
-    tiebreaker_df = load_tiebreakers()
-    tiebreaker_df = tiebreaker_df[tiebreaker_df["group_name"] == group_name]
 
-    # DEBUG: show what group_name values exist in the file
-    unique_groups = picks_df["group_name"].astype(str).unique()
-    print("DEBUG groups in picks_df:", [repr(g) for g in unique_groups], flush=True)
+    # ---------------------------
+    # Load users.csv (for tiebreakers + real_name)
+    # ---------------------------
+    users_df = load_users()
+    users_df = users_df[users_df["group_name"] == group_name]
 
-    # Ensure required columns exist (no crash)
+    # Normalize username casing for join use
+    users_df["username"] = users_df["username"].astype(str)
+    users_df["tiebreaker"] = users_df["tiebreaker"].fillna("").astype(str)
+    users_df["username"] = users_df["username"].str.lower()
+
+    # ---------------------------
+    # Validate picks.csv columns
+    # ---------------------------
     required_columns = [
         "group_name",
         "username",
@@ -763,26 +774,25 @@ def api_picks_board(group_name):
         if col not in picks_df.columns:
             picks_df[col] = 0 if col == "point_value" else ""
 
-    # Normalize strings
     picks_df["group_name"] = picks_df["group_name"].astype(str).str.strip()
     group_name = group_name.strip()
 
-    # Filter by group
+    # Filter group
     picks_df = picks_df[picks_df["group_name"] == group_name]
 
     if picks_df.empty:
-        print("No picks for group—return empty.", flush=True)
+        print("No picks for group — return empty.", flush=True)
         return {"games": [], "users": []}
 
-    # Load games dataframe
+    # ---------------------------
+    # Load games
+    # ---------------------------
     games_df = load_games()
     print("GAMES_DF COLUMNS:", list(games_df.columns), flush=True)
 
-    # Convert IDs to strings
     picks_df["game_id"] = picks_df["game_id"].astype(str)
     games_df["game_id"] = games_df["game_id"].astype(str)
 
-    # Rename game point_value → game_point_value to avoid collision
     games_df = games_df.rename(columns={"point_value": "game_point_value"})
 
     # Build ordered games list
@@ -798,26 +808,24 @@ def api_picks_board(group_name):
             }
         )
 
+    # ---------------------------
     # Merge picks with game scoring data
+    # ---------------------------
     merged = picks_df.merge(
         games_df[["game_id", "winner", "completed", "game_point_value"]],
         on="game_id",
         how="left",
     )
 
-    # Fill missing fields
     merged["completed"] = merged["completed"].fillna(False)
     merged["game_point_value"] = merged["game_point_value"].fillna(0).astype(int)
 
-    # Determine correct picks
     merged["correct"] = (merged["completed"] == True) & (
         merged["selected_team"] == merged["winner"]
     )
 
-    # Score = correct * game point value
     merged["score"] = merged["correct"].astype(int) * merged["game_point_value"]
 
-    # Aggregate totals by user
     totals = (
         merged.groupby("username", as_index=False)["score"]
         .sum()
@@ -825,36 +833,47 @@ def api_picks_board(group_name):
         .sort_values("total_points", ascending=False)
     )
 
-    # Build output user list
+    # ---------------------------
+    # Build user rows
+    # ---------------------------
     users_output = []
-    for _, user_row in totals.iterrows():
-        username = user_row["username"]
-        total_points = int(user_row["total_points"])
+    for _, row in totals.iterrows():
+        username = row["username"]
+        total_points = int(row["total_points"])
 
+        # get user's picks
         user_picks_df = merged[merged["username"] == username]
 
-        pick_map = {}
-        for _, r in user_picks_df.iterrows():
-            pick_map[r["game_id"]] = {
+        pick_map = {
+            r["game_id"]: {
                 "pick": r["selected_team"],
                 "correct": bool(r["correct"]),
                 "completed": bool(r["completed"]),
                 "point_value": int(r["game_point_value"]),
             }
+            for _, r in user_picks_df.iterrows()
+        }
 
-        # Look up real name
+        # get name from picks
         real_name = ""
         if "name" in user_picks_df.columns:
             real_name = str(user_picks_df["name"].iloc[0])
 
-        # Lookup user's tiebreaker (may be missing)
-        tb_row = tiebreaker_df[tiebreaker_df["username"] == username]
-        if not tb_row.empty:
-            tiebreaker_value = tb_row.iloc[0]["tiebreaker"]
-            try:
-                tiebreaker_value = int(tiebreaker_value)
-            except Exception:
-                pass
+        # ---------------------------
+        # IMPORTANT PART:
+        # Get tiebreaker from users.csv ONLY
+        # ---------------------------
+        tb = users_df[users_df["username"] == username]
+
+        if not tb.empty:
+            raw_tb = str(tb.iloc[0]["tiebreaker"]).strip()
+            if raw_tb and raw_tb.lower() not in ("nan", "none", ""):
+                try:
+                    tiebreaker_value = int(float(raw_tb))  # normalize both "63.0" → 63
+                except:
+                    tiebreaker_value = raw_tb
+            else:
+                tiebreaker_value = None
         else:
             tiebreaker_value = None
 
