@@ -8,6 +8,7 @@ from functools import wraps
 from flask_cors import CORS
 import uuid
 import requests  # needed for update_spreads
+import uuid
 
 
 # ======================================================
@@ -28,6 +29,31 @@ else:
     CSV_DIR = "./data"
     os.makedirs(DISK_DIR, exist_ok=True)
     os.makedirs(CSV_DIR, exist_ok=True)
+
+# File paths
+USERS_PATH = os.path.join(DISK_DIR, "users.csv")
+PICKS_PATH = os.path.join(DISK_DIR, "picks.csv")
+GAMES_PATH = os.path.join(DISK_DIR, "games.csv")
+GROUPS_PATH = os.path.join(DISK_DIR, "groups.csv")
+
+
+def load_users() -> pd.DataFrame:
+    """
+    Load users.csv into a DataFrame. If the file does not exist,
+    create it with the correct header structure.
+    """
+    if not os.path.exists(USERS_PATH):
+        pd.DataFrame(
+            columns=["group_name", "username", "name", "token", "has_submitted", "tiebreaker"]
+        ).to_csv(USERS_PATH, index=False)
+    return pd.read_csv(USERS_PATH)
+
+
+def save_users(df: pd.DataFrame) -> None:
+    """
+    Write the DataFrame back to users.csv.
+    """
+    df.to_csv(USERS_PATH, index=False)
 
 # ------------------------------------------------------
 # LOCK DEADLINE — 9 AM PST, DECEMBER 13, 2025
@@ -93,11 +119,6 @@ def seed_disk():
 
 # Run seeding at startup (only once per deploy)
 seed_disk()
-
-# Ensure user_tokens.csv exists
-TOKENS_PATH = f"{DISK_DIR}/user_tokens.csv"
-if not os.path.exists(TOKENS_PATH):
-    pd.DataFrame(columns=["token", "group", "username"]).to_csv(TOKENS_PATH, index=False)
 
 
 # ======================================================
@@ -374,65 +395,61 @@ def api_save_session_picks(group_name):
 # ------------------------------
 # Create user (pre-seed picks.csv rows)
 # ------------------------------
-@app.route("/api/<group>/create-user", methods=["POST"])
-def api_create_user(group):
-    data = request.get_json()
+@app.route("/api/<group_name>/create-user", methods=["POST"])
+def api_create_user(group_name):
+    data = request.get_json() or {}
     username = data.get("username", "").strip()
     name = data.get("name", "").strip()
 
     if not username or not name:
         return {"error": "Missing required fields"}, 400
 
-    # Normalize group name using groups.csv
-    group = group.strip()
-
-    groups_path = os.path.join(DISK_DIR, "groups.csv")
-    groups_df = pd.read_csv(groups_path)
-
+    # Normalize group via groups.csv
+    group_name = group_name.strip()
+    groups_df = pd.read_csv(GROUPS_PATH)
     group_map = {g.lower(): g for g in groups_df["group_name"].astype(str)}
 
-    if group.lower() not in group_map:
-        return {"error": f"Group '{group}' does not exist"}, 400
+    if group_name.lower() not in group_map:
+        return {"error": f"Group '{group_name}' does not exist"}, 400
 
-    canonical_group = group_map[group.lower()]
+    canonical_group = group_map[group_name.lower()]
 
-    # Load picks and check for existing username IN THIS GROUP
-    picks_path = os.path.join(DISK_DIR, "picks.csv")
-    picks_df = pd.read_csv(picks_path)
+    # Load users.csv
+    users_df = load_users()
 
-    existing = picks_df[
-        (picks_df["group_name"].str.lower() == canonical_group.lower()) &
-        (picks_df["username"].str.lower() == username.lower())
+    # Check uniqueness within the same group (case-insensitive)
+    existing = users_df[
+        (users_df["group_name"].str.lower() == canonical_group.lower()) &
+        (users_df["username"].str.lower() == username.lower())
     ]
 
     if not existing.empty:
         return {"error": "Username already exists"}, 400
 
-    # Create rows for each game
-    games_path = os.path.join(DISK_DIR, "games.csv")
-    games_df = pd.read_csv(games_path)
+    # Generate a token for this user
+    token = str(uuid.uuid4())
 
-    new_rows = []
-    for _, game in games_df.iterrows():
-        new_rows.append({
-            "group_name": canonical_group,
-            "username": username,
-            "name": name,
-            "game_id": game["game_id"],
-            "selected_team": "",
-            "point_value": game["point_value"],
-        })
+    # Create new user row
+    new_user = {
+        "group_name": canonical_group,
+        "username": username,
+        "name": name,
+        "token": token,
+        "has_submitted": False,
+        "tiebreaker": None,
+    }
 
-    new_df = pd.DataFrame(new_rows)
-    updated_df = pd.concat([picks_df, new_df], ignore_index=True)
-    updated_df.to_csv(picks_path, index=False)
+    # Append to users.csv
+    users_df = pd.concat([users_df, pd.DataFrame([new_user])], ignore_index=True)
+    save_users(users_df)
 
-    # Return a token (your version returned one)
+    # Return token for navigation
     return {
         "success": True,
         "message": "User created",
-        "token": f"{canonical_group}:{username}"
+        "token": token
     }, 200
+
 
 
 # ------------------------------
@@ -442,69 +459,52 @@ def api_create_user(group):
 @app.route("/api/<group_name>/confirm_picks", methods=["POST"])
 @require_group
 def api_confirm_picks(group_name):
-    data = request.get_json()
+    data = request.get_json() or {}
 
     username = data.get("username", "").strip()
     name = data.get("name", "").strip()
     picks = data.get("picks")  # dict: game_id → selected_team
-    tiebreaker = data.get("tiebreaker")
+    tiebreaker = data.get("tiebreaker", None)
 
     if not username or not picks:
         return {"error": "Missing username or picks"}, 400
 
     # ======================================================
-    # 1. Generate permalink token
+    # 1. Load users.csv and confirm user exists
     # ======================================================
-    token_path = f"{DISK_DIR}/user_tokens.csv"
+    users_df = load_users()
 
-    if os.path.exists(token_path):
-        token_df = pd.read_csv(token_path)
-    else:
-        token_df = pd.DataFrame(columns=["token", "group", "username"])
+    # Case-insensitive lookup
+    mask = (
+        (users_df["group_name"].str.lower() == group_name.lower()) &
+        (users_df["username"].str.lower() == username.lower())
+    )
 
-    # Remove old tokens for this user/group
-    token_df = token_df[
-        ~(
-            (token_df["group"] == group_name) &
-            (token_df["username"] == username)
-        )
-    ]
+    if not mask.any():
+        return {"error": "User does not exist"}, 400
 
-    # Create new token
-    new_token = uuid.uuid4().hex
-
-    token_df = pd.concat([
-    token_df,
-    pd.DataFrame([{
-        "token": new_token,
-        "group": group_name,
-        "username": username,
-        "name": name,
-        "tiebreaker": tiebreaker if tiebreaker is not None else ""
-    }])
-], ignore_index=True)
-
-
-    # Save token CSV
-    token_df.to_csv(token_path, index=False)
+    # Get the user's existing token
+    user_token = users_df.loc[mask, "token"].iloc[0]
 
     # ======================================================
-    # 2. Save tiebreaker (if present)
+    # 2. Update user submission fields
     # ======================================================
+    users_df.loc[mask, "has_submitted"] = True
+
     if tiebreaker is not None:
         try:
-            tiebreaker = int(tiebreaker)
-            save_tiebreaker(group_name, username, name, tiebreaker)
+            users_df.loc[mask, "tiebreaker"] = int(tiebreaker)
         except Exception:
-            pass
+            users_df.loc[mask, "tiebreaker"] = tiebreaker
+
+    save_users(users_df)
 
     # ======================================================
-    # 3. Save picks to picks.csv
+    # 3. Save final picks to picks.csv
     # ======================================================
+    picks_path = f"{DISK_DIR}/picks.csv"
     games_df = load_games()
     games_df["game_id"] = games_df["game_id"].astype(str)
-
-    picks_path = f"{DISK_DIR}/picks.csv"
 
     if os.path.exists(picks_path):
         picks_df = pd.read_csv(picks_path)
@@ -520,49 +520,47 @@ def api_confirm_picks(group_name):
             ]
         )
 
-    # Remove this user's old picks
+    # Remove user's previous picks (if any)
     picks_df = picks_df[
         ~(
-            (picks_df["group_name"] == group_name) &
-            (picks_df["username"] == username)
+            (picks_df["group_name"].str.lower() == group_name.lower()) &
+            (picks_df["username"].str.lower() == username.lower())
         )
     ]
 
-    # Build new pick rows
+    # Create new pick rows
     new_rows = []
-    for game_id, team_name in picks.items():
-        match = games_df.loc[games_df["game_id"] == str(game_id)]
-        if match.empty:
+    for game_id, selected_team in picks.items():
+        game_row = games_df[games_df["game_id"] == str(game_id)]
+        if game_row.empty:
             continue
-        point_val = match["point_value"].values[0]
+
+        point_val = int(game_row.iloc[0]["point_value"])
 
         new_rows.append({
             "group_name": group_name,
             "username": username,
             "name": name or username,
             "game_id": str(game_id),
-            "selected_team": team_name,
-            "point_value": int(point_val),
+            "selected_team": selected_team,
+            "point_value": point_val,
         })
 
-    # Append & dedupe
     if new_rows:
-        new_df = pd.DataFrame(new_rows)
-        final_df = pd.concat([picks_df, new_df], ignore_index=True)
-    else:
-        final_df = picks_df
+        picks_df = pd.concat([picks_df, pd.DataFrame(new_rows)], ignore_index=True)
 
-    final_df = final_df.drop_duplicates(
+    # Deduplicate safety (should not be necessary but safe)
+    picks_df = picks_df.drop_duplicates(
         subset=["group_name", "username", "game_id"],
-        keep="last"
+        keep="last",
     )
 
-    final_df.to_csv(picks_path, index=False)
+    picks_df.to_csv(picks_path, index=False)
 
     # ======================================================
-    # 4. Return success with token
+    # 4. Return success and user's permanent token
     # ======================================================
-    return {"success": True, "token": new_token}, 200
+    return {"success": True, "token": user_token}, 200
 
 
 # ======================================================
@@ -601,17 +599,20 @@ def api_get_tiebreaker(group_name):
 @require_group
 def api_check_username(group_name):
     username = request.args.get("username", "").strip()
-
     if not username:
-        return {"available": False}
+        return {"available": False, "error": "Missing username"}, 400
 
-    picks_df = load_picks()
-    collision = picks_df[
-        (picks_df["group_name"] == group_name)
-        & (picks_df["username"] == username)
+    # Load users.csv
+    users_df = load_users()
+
+    # Case-insensitive lookup for username within this group
+    exists = users_df[
+        (users_df["group_name"].str.lower() == group_name.lower()) &
+        (users_df["username"].str.lower() == username.lower())
     ]
 
-    return {"available": collision.empty}
+    return {"available": exists.empty}, 200
+
 
 
 # ------------------------------
@@ -775,58 +776,6 @@ def api_leaderboard(group_name):
     ).astype(int)
 
     return {"leaderboard": totals.to_dict(orient="records")}
-
-
-# ------------------------------
-# Has user submitted picks? 
-# ------------------------------
-@app.route("/<group>/has_submitted_picks", methods=["GET"])
-def has_submitted_picks(group):
-    username = request.args.get("username", "").strip()
-    if not username:
-        return {"submitted": False}, 200
-
-    # Load games for the group
-    games_csv = os.path.join(DISK_DIR, f"{group}_games.csv")
-    if not os.path.exists(games_csv):
-        return {"submitted": False}, 200
-
-    games_df = pd.read_csv(games_csv)
-    total_games = len(games_df)
-
-    # Load picks for this user
-    picks_csv = os.path.join(DISK_DIR, f"{group}_picks.csv")
-    if not os.path.exists(picks_csv):
-        return {"submitted": False}, 200
-
-    picks_df = pd.read_csv(picks_csv)
-
-    # Count user’s picks
-    user_picks = picks_df[picks_df["username"] == username]
-
-    submitted = len(user_picks) == total_games
-
-    return {"submitted": submitted}, 200
-
-@app.route("/api/<group>/<username>/has-submitted", methods=["GET"])
-def api_has_submitted(group, username):
-    picks_path = os.path.join(DISK_DIR, "picks.csv")
-
-    try:
-        df = pd.read_csv(picks_path)
-    except Exception as e:
-        return {"error": str(e)}, 500
-
-    user_picks = df[(df["group_name"] == group) & (df["username"] == username)]
-
-    # Count required picks
-    games_path = os.path.join(DISK_DIR, "games.csv")
-    games_df = pd.read_csv(games_path)
-    required_picks = len(games_df)
-
-    submitted = len(user_picks) == required_picks
-
-    return {"submitted": bool(submitted)}
 
 
 # ------------------------------
@@ -1114,44 +1063,38 @@ def internal_update_spreads():
 
 
 # ===== PUBLIC PERMALINK LOOKUP =====
-@app.route('/api/p/<token>')
+@app.route("/api/p/<token>")
 def api_get_picks_by_token(token):
-    token_path = f"{DISK_DIR}/user_tokens.csv"
+    users_df = load_users()
 
-    if not os.path.exists(token_path):
-        return jsonify({"error": "Token storage missing"}), 500
-
-    tokens = pd.read_csv(token_path)
-    row = tokens[tokens["token"] == token]
+    row = users_df[users_df["token"] == token]
 
     if row.empty:
         return jsonify({"error": "Invalid link"}), 404
 
-    group = row.iloc[0]["group"]
+    group_name = row.iloc[0]["group_name"]
     username = row.iloc[0]["username"]
-    name = row.iloc[0].get("name", "")
-    tiebreaker = row.iloc[0].get("tiebreaker", "")
+    name = row.iloc[0]["name"]
+    tiebreaker = row.iloc[0]["tiebreaker"]
 
     picks_df = load_picks()
-    picks_df = picks_df[
-        (picks_df["group_name"] == group) &
+    user_picks = picks_df[
+        (picks_df["group_name"] == group_name) &
         (picks_df["username"] == username)
     ]
 
     return jsonify({
-        "group": group,
+        "group": group_name,
         "username": username,
         "name": name,
         "tiebreaker": tiebreaker,
-        "picks": picks_df.to_dict(orient="records")
+        "picks": user_picks.to_dict(orient="records")
     })
 
 
-# Human-friendly frontend permalink
-@app.route('/p/<token>')
+@app.route("/p/<token>")
 def permalink_redirect(token):
     return api_get_picks_by_token(token)
-
 
 
 
