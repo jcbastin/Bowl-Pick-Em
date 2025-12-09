@@ -459,7 +459,7 @@ def api_confirm_picks(group_name):
     username = data.get("username", "").strip()
     name = data.get("name", "").strip()
     picks = data.get("picks")  # dict: game_id → selected_team
-    tiebreaker = data.get("tiebreaker", None)
+    tiebreaker = data.get("tiebreaker")
 
     if not username or not picks:
         return {"error": "Missing username or picks"}, 400
@@ -469,7 +469,6 @@ def api_confirm_picks(group_name):
     # ======================================================
     users_df = load_users()
 
-    # Case-insensitive lookup
     mask = (
         (users_df["group_name"].str.lower() == group_name.lower()) &
         (users_df["username"].str.lower() == username.lower())
@@ -478,7 +477,6 @@ def api_confirm_picks(group_name):
     if not mask.any():
         return {"error": "User does not exist"}, 400
 
-    # Get the user's existing token
     user_token = users_df.loc[mask, "token"].iloc[0]
 
     # ======================================================
@@ -492,159 +490,71 @@ def api_confirm_picks(group_name):
         except Exception:
             users_df.loc[mask, "tiebreaker"] = tiebreaker
 
-save_users(users_df)
+    save_users(users_df)
 
-# ======================================================
-# 2b. ALSO save tiebreaker in tiebreakers.csv (needed for picks board)
-# ======================================================
-if tiebreaker is not None:
-    try:
-        save_tiebreaker(group_name, username, name, int(tiebreaker))
-    except Exception:
-        save_tiebreaker(group_name, username, name, tiebreaker)
+    # ======================================================
+    # 2b. ALSO save tiebreaker in tiebreakers.csv (for picks_board)
+    # ======================================================
+    if tiebreaker is not None:
+        try:
+            save_tiebreaker(group_name, username, name, int(tiebreaker))
+        except Exception:
+            save_tiebreaker(group_name, username, name, tiebreaker)
 
-# ======================================================
-# 3. Save final picks to picks.csv
-# ======================================================
-picks_path = f"{DISK_DIR}/picks.csv"
-games_df = load_games()
-games_df["game_id"] = games_df["game_id"].astype(str)
+    # ======================================================
+    # 3. Save final picks to picks.csv
+    # ======================================================
+    picks_path = f"{DISK_DIR}/picks.csv"
+    games_df = load_games()
+    games_df["game_id"] = games_df["game_id"].astype(str)
 
-if os.path.exists(picks_path):
-    picks_df = pd.read_csv(picks_path)
-else:
-    picks_df = pd.DataFrame(
-        columns=[
-            "group_name",
-            "username",
-            "name",
-            "game_id",
-            "selected_team",
-            "point_value",
-        ]
+    if os.path.exists(picks_path):
+        picks_df = pd.read_csv(picks_path)
+    else:
+        picks_df = pd.DataFrame(
+            columns=["group_name", "username", "name", "game_id",
+                     "selected_team", "point_value"]
+        )
+
+    # Remove previous picks for user
+    picks_df = picks_df[
+        ~(
+            (picks_df["group_name"].str.lower() == group_name.lower()) &
+            (picks_df["username"].str.lower() == username.lower())
+        )
+    ]
+
+    # Add new picks
+    new_rows = []
+    for game_id, selected_team in picks.items():
+        game_row = games_df[games_df["game_id"] == str(game_id)]
+        if game_row.empty:
+            continue
+
+        point_val = int(game_row.iloc[0]["point_value"])
+
+        new_rows.append({
+            "group_name": group_name,
+            "username": username,
+            "name": name or username,
+            "game_id": str(game_id),
+            "selected_team": selected_team,
+            "point_value": point_val,
+        })
+
+    if new_rows:
+        picks_df = pd.concat([picks_df, pd.DataFrame(new_rows)], ignore_index=True)
+
+    picks_df = picks_df.drop_duplicates(
+        subset=["group_name", "username", "game_id"], keep="last"
     )
 
-# Remove user's previous picks (if any)
-picks_df = picks_df[
-    ~(
-        (picks_df["group_name"].str.lower() == group_name.lower()) &
-        (picks_df["username"].str.lower() == username.lower())
-    )
-]
+    picks_df.to_csv(picks_path, index=False)
 
-# Create new pick rows
-new_rows = []
-for game_id, selected_team in picks.items():
-    game_row = games_df[games_df["game_id"] == str(game_id)]
-    if game_row.empty:
-        continue
-
-    point_val = int(game_row.iloc[0]["point_value"])
-
-    new_rows.append({
-        "group_name": group_name,
-        "username": username,
-        "name": name or username,
-        "game_id": str(game_id),
-        "selected_team": selected_team,
-        "point_value": point_val,
-    })
-
-if new_rows:
-    picks_df = pd.concat([picks_df, pd.DataFrame(new_rows)], ignore_index=True)
-
-# Deduplicate safety
-picks_df = picks_df.drop_duplicates(
-    subset=["group_name", "username", "game_id"],
-    keep="last",
-)
-
-picks_df.to_csv(picks_path, index=False)
-
-# ======================================================
-# 4. Return success and user's permanent token
-# ======================================================
-return {"success": True, "token": user_token}, 200
-
-
-# ======================================================
-# GET TIEBREAKER
-# ======================================================
-@app.route("/api/<group_name>/get_tiebreaker")
-@require_group
-def api_get_tiebreaker(group_name):
-    username = request.args.get("username", "").strip()
-    if not username:
-        return {"error": "Missing username"}, 400
-
-    df = load_tiebreakers()
-
-    row = df[
-        (df["group_name"] == group_name) &
-        (df["username"] == username)
-    ]
-
-    if row.empty:
-        return {"tiebreaker": None}
-
-    tb = row.iloc[0]["tiebreaker"]
-    try:
-        tb = int(tb)
-    except Exception:
-        pass
-
-    return {"tiebreaker": tb}
-
-
-# ------------------------------
-# Username availability (per group)
-# ------------------------------
-@app.route("/api/<group_name>/check_username")
-@require_group
-def api_check_username(group_name):
-    username = request.args.get("username", "").strip()
-    if not username:
-        return {"available": False, "reason": "missing"}, 400
-
-    users_df = load_users()
-    picks_df = load_picks()
-
-    # Normalize group for lookup
-    group_lower = group_name.lower()
-    username_lower = username.lower()
-
-    # Check if username exists in this group
-    existing_user = users_df[
-        (users_df["group_name"].str.lower() == group_lower) &
-        (users_df["username"].str.lower() == username_lower)
-    ]
-
-    # CASE 1: Username does not exist → "new"
-    if existing_user.empty:
-        return {
-            "available": True,
-            "reason": "new"
-        }, 200
-
-    # Username exists → check if they have submitted picks
-    user_picks = picks_df[
-        (picks_df["group_name"].str.lower() == group_lower) &
-        (picks_df["username"].str.lower() == username_lower)
-    ]
-
-    # CASE 2: User has submitted picks → block
-    if len(user_picks) > 0:
-        return {
-            "available": False,
-            "reason": "submitted"
-        }, 200
-
-    # CASE 3: User exists but no picks → allow resume
-    return {
-        "available": True,
-        "reason": "exists_no_picks"
-    }, 200
-
+    # ======================================================
+    # 4. Success
+    # ======================================================
+    return {"success": True, "token": user_token}, 200
 
 
 # ------------------------------
