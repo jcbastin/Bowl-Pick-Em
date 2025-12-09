@@ -958,32 +958,49 @@ def api_picks_board(group_name):
 def api_check_username(group_name):
     username = request.args.get("username", "").strip().lower()
     if not username:
-        return {"available": False, "reason": None}, 400
+        return {"available": False, "reason": None, "stored_name": None}, 400
 
     users_df = load_users()
     picks_df = load_picks()
     group_lower = group_name.lower()
 
-    # USER DOES NOT EXIST
     matching_user = users_df[
         (users_df["group_name"].str.lower() == group_lower) &
         (users_df["username"].str.lower() == username)
     ]
 
+    # USER DOES NOT EXIST
     if matching_user.empty:
-        return { "available": True, "reason": "new" }
+        return { 
+            "available": True, 
+            "reason": "new",
+            "stored_name": None
+        }
 
-    # USER EXISTS → CHECK IF THEY SUBMITTED PICKS
+    # USER EXISTS
+    stored_name = matching_user.iloc[0]["name"]
+
+    # CHECK PICKS
     user_picks = picks_df[
         (picks_df["group_name"].str.lower() == group_lower) &
         (picks_df["username"].str.lower() == username)
     ]
 
+    # USER SUBMITTED PICKS
     if len(user_picks) > 0:
-        return { "available": False, "reason": "submitted" }
+        return { 
+            "available": False, 
+            "reason": "submitted",
+            "stored_name": stored_name
+        }
 
-    # USER EXISTS WITH NO PICKS → ALLOW RESUME
-    return { "available": True, "reason": "exists_no_picks" }
+    # USER EXISTS, NO PICKS YET
+    return { 
+        "available": True, 
+        "reason": "exists_no_picks",
+        "stored_name": stored_name
+    }
+
 
 
 # ======================================================
