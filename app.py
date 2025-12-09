@@ -388,7 +388,7 @@ def api_create_user():
     groups_path = os.path.join(DISK_DIR, "groups.csv")
     groups_df = pd.read_csv(groups_path)
 
-    if group not in groups_df["group_name"].values:
+    if group.lower() not in groups_df["group_name"].str.lower().values:
         return {"error": f"Group '{group}' does not exist"}, 400
 
     # Load picks.csv to ensure username is not already taken
