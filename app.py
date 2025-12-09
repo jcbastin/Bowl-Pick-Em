@@ -260,6 +260,52 @@ def save_tiebreaker(group_name: str, username: str, name: str, tb_value: int):
 # ======================================================
 
 # ------------------------------
+# Group Info
+# ------------------------------
+@app.get("/group_info/<group_name>")
+def get_group_info(group_name):
+    import csv
+    file_path = os.path.join(DISK_DIR, "group_info.csv")
+
+    try:
+        with open(file_path, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["group_name"].strip().lower() == group_name.strip().lower():
+                    return row
+        return {"error": "Group not found"}, 404
+    except Exception as e:
+        return {"error": str(e)}, 500
+
+@app.get("/group_pot/<group_name>")
+def get_group_pot(group_name):
+    import csv
+    picks_path = os.path.join(DISK_DIR, "picks.csv")
+    info_path = os.path.join(DISK_DIR, "group_info.csv")
+
+    # Load buy_in
+    buy_in = 0
+    with open(info_path, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["group_name"].strip().lower() == group_name.strip().lower():
+                buy_in = float(row["buy_in"])
+                break
+
+    # Count unique users in picks.csv
+    unique_users = set()
+    with open(picks_path, "r") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row["group_name"].strip().lower() == group_name.strip().lower():
+                unique_users.add(row["username"])
+
+    pot = len(unique_users) * buy_in
+
+    return {"pot": pot, "num_players": len(unique_users)}
+
+
+# ------------------------------
 # Get bowl games
 # ------------------------------
 @app.route("/api/<group_name>/games")
