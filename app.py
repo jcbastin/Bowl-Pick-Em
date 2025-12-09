@@ -430,7 +430,7 @@ def api_create_user(group_name):
 
     # CASE 1: Username does not exist → create new user
     if existing_user.empty:
-        token = generate_token()
+        token = generate_user_token()
         new_row = {
             "group_name": group_name,
             "username": username,
