@@ -8,7 +8,6 @@ from functools import wraps
 from flask_cors import CORS
 import uuid
 import requests  # needed for update_spreads
-import uuid
 
 
 # ======================================================
@@ -56,17 +55,17 @@ def save_users(df: pd.DataFrame) -> None:
     df.to_csv(USERS_PATH, index=False)
 
 # ------------------------------------------------------
-# LOCK DEADLINE — 9 AM PST, DECEMBER 13, 2025
+# LOCK DEADLINE — 8:00 PM ET (5:00 PM PT), DECEMBER 13, 2025
 # ------------------------------------------------------
-PICK_DEADLINE_PST = datetime(
-    2025, 12, 13, 9, 0, 0, tzinfo=pytz.timezone("US/Pacific")
+PICK_DEADLINE_PST = pytz.timezone("US/Pacific").localize(
+    datetime(2025, 12, 13, 17, 0, 0)
 )
 
 # ------------------------------------------------------
 # CHAMPIONSHIP DEADLINE — 9:30 PM PST, JANUARY 19, 2026
 # ------------------------------------------------------
-CHAMPIONSHIP_END_PST = datetime(
-    2026, 1, 19, 21, 30, 0, tzinfo=pytz.timezone("US/Pacific")
+CHAMPIONSHIP_END_PST = pytz.timezone("US/Pacific").localize(
+    datetime(2026, 1, 19, 21, 30, 0)
 )
 
 
@@ -83,6 +82,28 @@ def championship_complete() -> bool:
 
 def generate_user_token():
     return uuid.uuid4().hex
+
+def game_locked(game_row) -> bool:
+    """
+    A game is locked if it has started or is completed.
+    """
+    # Completed game → locked
+    if bool(game_row.get("completed", False)):
+        return True
+
+    kickoff = game_row.get("kickoff_datetime")
+    if not kickoff:
+        return False
+
+    try:
+        kickoff_dt = pd.to_datetime(kickoff).tz_localize(
+            "US/Pacific", nonexistent="shift_forward", ambiguous="NaT"
+        )
+    except Exception:
+        return False
+
+    now_pst = datetime.now(pytz.timezone("US/Pacific"))
+    return now_pst >= kickoff_dt
 
 
 # ======================================================
@@ -245,43 +266,6 @@ def user_has_submitted(username: str, group_name: str) -> bool:
     ).any()
 
 
-def load_tiebreakers() -> pd.DataFrame:
-    path = f"{DISK_DIR}/tiebreakers.csv"
-    if not os.path.exists(path):
-        return pd.DataFrame(columns=["group_name", "username", "name", "tiebreaker"])
-    df = pd.read_csv(path)
-    return df
-
-
-def save_tiebreaker(group_name: str, username: str, name: str, tb_value: int):
-    """Save or update a user's tiebreaker guess."""
-    path = f"{DISK_DIR}/tiebreakers.csv"
-
-    if os.path.exists(path):
-        df = pd.read_csv(path)
-    else:
-        df = pd.DataFrame(columns=["group_name", "username", "name", "tiebreaker"])
-
-    # Remove old values for this user
-    df = df[
-        ~(
-            (df["group_name"] == group_name)
-            & (df["username"] == username)
-        )
-    ]
-
-    # Add new row
-    new_row = pd.DataFrame([{
-        "group_name": group_name,
-        "username": username,
-        "name": name,
-        "tiebreaker": tb_value
-    }])
-
-    df = pd.concat([df, new_row], ignore_index=True)
-    df.to_csv(path, index=False)
-
-
 # ======================================================
 #               API ROUTES
 # ======================================================
@@ -290,6 +274,7 @@ def save_tiebreaker(group_name: str, username: str, name: str, tb_value: int):
 # Group Info
 # ------------------------------
 @app.get("/group_info/<group_name>")
+@require_group
 def get_group_info(group_name):
     import csv
     file_path = os.path.join(DISK_DIR, "group_info.csv")
@@ -305,6 +290,7 @@ def get_group_info(group_name):
         return {"error": str(e)}, 500
 
 @app.get("/group_pot/<group_name>")
+@require_group
 def get_group_pot(group_name):
     import csv
     picks_path = os.path.join(DISK_DIR, "picks.csv")
@@ -464,11 +450,18 @@ def api_confirm_picks(group_name):
 
     username = data.get("username", "").strip()
     name = data.get("name", "").strip()
-    picks = data.get("picks")  # dict: game_id → selected_team
+    picks = data.get("picks")
     tiebreaker = data.get("tiebreaker")
 
     if not username or not picks:
         return {"error": "Missing username or picks"}, 400
+
+    # 🔒 GLOBAL PICK LOCK (ADD THIS)
+    if picks_locked():
+        return {
+            "error": "Picks are locked",
+            "deadline_iso": PICK_DEADLINE_PST.isoformat()
+        }, 403
 
     # ======================================================
     # 1. Load users.csv and confirm user exists
@@ -499,15 +492,6 @@ def api_confirm_picks(group_name):
     save_users(users_df)
 
     # ======================================================
-    # 2b. ALSO save tiebreaker in tiebreakers.csv (for picks_board)
-    # ======================================================
-    if tiebreaker is not None:
-        try:
-            save_tiebreaker(group_name, username, name, int(tiebreaker))
-        except Exception:
-            save_tiebreaker(group_name, username, name, tiebreaker)
-
-    # ======================================================
     # 3. Save final picks to picks.csv
     # ======================================================
     picks_path = f"{DISK_DIR}/picks.csv"
@@ -518,8 +502,14 @@ def api_confirm_picks(group_name):
         picks_df = pd.read_csv(picks_path)
     else:
         picks_df = pd.DataFrame(
-            columns=["group_name", "username", "name", "game_id",
-                     "selected_team", "point_value"]
+            columns=[
+                "group_name",
+                "username",
+                "name",
+                "game_id",
+                "selected_team",
+                "point_value",
+            ]
         )
 
     # Remove previous picks for user
@@ -530,11 +520,15 @@ def api_confirm_picks(group_name):
         )
     ]
 
-    # Add new picks
     new_rows = []
+
     for game_id, selected_team in picks.items():
         game_row = games_df[games_df["game_id"] == str(game_id)]
         if game_row.empty:
+            continue
+
+        # 🚫 Block picks for locked games (already started / completed)
+        if game_locked(game_row.iloc[0]):
             continue
 
         point_val = int(game_row.iloc[0]["point_value"])
@@ -570,14 +564,24 @@ def api_confirm_picks(group_name):
 @require_group
 def api_get_user_picks(group_name):
     username = request.args.get("username", "").strip()
+
     if not username:
         return {"error": "Missing username"}, 400
 
     picks_df = load_picks()
 
+    # Normalize for matching
+    group_lower = group_name.lower()
+    username_lower = username.lower()
+
+    # Ensure required columns exist (defensive)
+    for col in ["group_name", "username"]:
+        if col not in picks_df.columns:
+            return []
+
     filtered = picks_df[
-        (picks_df["group_name"] == group_name)
-        & (picks_df["username"] == username)
+        (picks_df["group_name"].str.lower() == group_lower) &
+        (picks_df["username"].str.lower() == username_lower)
     ]
 
     return filtered.to_dict(orient="records")
@@ -1009,9 +1013,21 @@ def api_check_username(group_name):
 @app.post("/internal/update_winners")
 def internal_update_winners():
     # Only allow from cron, but skip security for now
-    import update_winners_live
+    from jobs import update_winners_live
     update_winners_live.main()
     return {"status": "ok"}
+
+
+# ======================================================
+#               UPDATE CFBD IDs (CFBD live IDs)
+# ======================================================
+@app.post("/internal/update_cfbd_ids")
+def internal_update_cfbd_ids():
+    from jobs import assign_cfbd_ids_live
+    result = assign_cfbd_ids_live.main()
+    return result
+
+
 
 
 # ======================================================
@@ -1072,12 +1088,17 @@ def api_winner(group_name):
         return {"winner": None}
 
     # Load all user tiebreakers
-    tb_df = load_tiebreakers()
-    tb_df = tb_df[tb_df["group_name"] == group_name]
+    users_df = load_users()
+    users_df = users_df[users_df["group_name"] == group_name]
+    users_df["username"] = users_df["username"].astype(str).str.lower()
 
-    # Merge totals with tiebreakers
-    totals = totals.merge(tb_df[["username", "tiebreaker"]], on="username", how="left")
+    totals["username"] = totals["username"].astype(str).str.lower()
 
+    totals = totals.merge(
+        users_df[["username", "tiebreaker"]],
+        on="username",
+        how="left"
+)
     # Replace missing tiebreakers with very large error (they lose the tiebreaker)
     totals["tiebreaker"] = totals["tiebreaker"].fillna(9999)
 
@@ -1128,7 +1149,7 @@ def api_has_submitted(group_name, username):
 # ======================================================
 #               UPDATE SPREADS (CFBD odds)
 # ======================================================
-from update_spreads import update_spreads
+from jobs.update_spreads import update_spreads
 
 @app.post("/internal/update_spreads")
 def internal_update_spreads():
