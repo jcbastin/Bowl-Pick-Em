@@ -883,13 +883,16 @@ def api_picks_board(group_name):
     # ---------------------------
     games_meta = []
     for _, row in games_df.sort_values("game_id").iterrows():
+        bowl_name = str(row.get("bowl_name", ""))
+
         games_meta.append(
             {
                 "game_id": str(row["game_id"]),
-                "label": row.get("bowl_name", ""),
+                "label": bowl_name,
                 "winner": row.get("winner", ""),
                 "completed": bool(row.get("completed", False)),
                 "point_value": int(row.get("game_point_value", 0)),
+                "is_cfp": "CFP" in bowl_name.upper(),
             }
         )
 
