@@ -1055,18 +1055,18 @@ def api_users_with_picks(group_name):
     return users_with_picks.to_dict(orient="records")
 
 # ------------------------------
-# Eliminated CFP Teams
+# Eliminated CFP Teams (GROUP-SCOPED)
 # ------------------------------
-@app.get("/eliminated_cfp_teams")
-def eliminated_cfp_teams():
-    import pandas as pd
-
-    games_df = pd.read_csv(GAMES_PATH)
+@app.get("/api/<group_name>/eliminated_cfp_teams")
+@require_group
+def api_eliminated_cfp_teams(group_name):
+    games_df = load_games()
     eliminated = get_eliminated_cfp_teams(games_df)
 
     return {
         "eliminated_cfp_teams": eliminated
     }
+
 
 
 # ------------------------------
