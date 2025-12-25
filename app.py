@@ -183,6 +183,17 @@ def require_group(f):
 # ======================================================
 #               DATA HELPERS
 # ======================================================
+def normalize_team(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    return (
+        name.lower()
+        .replace("’", "'")   # curly apostrophe
+        .replace("'", "")    # remove apostrophes
+        .replace(".", "")
+        .strip()
+    )
+
 
 def load_games() -> pd.DataFrame:
     """Load games metadata from games.csv, with safe defaults."""
