@@ -747,8 +747,9 @@ def api_leaderboard_top5(group_name):
     )
 
     merged["completed"] = merged["completed"].fillna(False)
-    merged["correct"] = (merged["completed"] == True) & (
-        merged["selected_team"] == merged["winner"]
+    merged["correct"] = (merged["completed"] == True) & merged.apply(
+        lambda r: normalize_team(r["selected_team"]) == normalize_team(r["winner"]),
+        axis=1
     )
 
     merged["score"] = merged["correct"].astype(int) * merged["point_value"]
@@ -809,8 +810,10 @@ def api_leaderboard(group_name):
     )
 
     merged["completed"] = merged["completed"].fillna(False)
-    merged["correct"] = (merged["completed"] == True) & (
-        merged["selected_team"] == merged["winner"]
+    
+    merged["correct"] = (merged["completed"] == True) & merged.apply(
+        lambda r: normalize_team(r["selected_team"]) == normalize_team(r["winner"]),
+        axis=1
     )
 
     merged["score"] = merged["correct"].astype(int) * merged["point_value"]
@@ -929,8 +932,9 @@ def api_picks_board(group_name):
     merged["completed"] = merged["completed"].fillna(False)
     merged["game_point_value"] = merged["game_point_value"].fillna(0).astype(int)
 
-    merged["correct"] = (merged["completed"] == True) & (
-        merged["selected_team"] == merged["winner"]
+    merged["correct"] = (merged["completed"] == True) & merged.apply(
+        lambda r: normalize_team(r["selected_team"]) == normalize_team(r["winner"]),
+        axis=1
     )
 
     merged["score"] = merged["correct"].astype(int) * merged["game_point_value"]
@@ -1164,9 +1168,11 @@ def api_winner(group_name):
     )
 
     # Score correct picks
-    merged["correct"] = (merged["completed"] == True) & (
-        merged["selected_team"] == merged["winner"]
+    merged["correct"] = (merged["completed"] == True) & merged.apply(
+        lambda r: normalize_team(r["selected_team"]) == normalize_team(r["winner"]),
+        axis=1
     )
+    
     merged["score"] = merged["correct"].astype(int) * merged["point_value"]
 
     # Compute total points per user
