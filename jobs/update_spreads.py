@@ -2,8 +2,10 @@ import os
 import requests
 import pandas as pd
 
+from jobs.paths import GAMES_CSV
+
 # ---- Paths ----
-CSV_PATH = "/opt/render/project/src/storage/games.csv"
+CSV_PATH = GAMES_CSV
 
 # ---- CFBD Key ----
 CFBD_KEY = os.getenv("CFBD_API_KEY")

@@ -2,6 +2,8 @@ import pandas as pd
 import requests
 import os
 
+from jobs.paths import GAMES_CSV
+
 # ======================================================
 #               CONFIG
 # ======================================================
@@ -9,7 +11,7 @@ import os
 API_KEY = os.getenv("CFBD_API_KEY")
 HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
-CSV_PATH = "/opt/render/project/src/storage/games.csv"
+CSV_PATH = GAMES_CSV
 
 
 # ======================================================

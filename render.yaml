@@ -21,7 +21,7 @@ services:
     env: python
     schedule: "*/15 * * * *"
     buildCommand: "pip install -r requirements.txt"
-    command: "python update_winners_live.py"
+    command: "python -m jobs.update_winners_live"
     envVars:
       - key: CFBD_API_KEY
         sync: false

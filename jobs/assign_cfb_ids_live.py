@@ -10,7 +10,9 @@ from datetime import datetime
 API_KEY = os.getenv("CFBD_API_KEY")
 HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
-CSV_PATH = "/opt/render/project/src/storage/games.csv"
+from jobs.paths import GAMES_CSV
+
+CSV_PATH = GAMES_CSV
 
 LOGO_PATH = "/static/logos"  # Adjust if needed
 
